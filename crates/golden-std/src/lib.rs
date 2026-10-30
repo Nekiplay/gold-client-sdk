@@ -28,7 +28,7 @@ pub mod game;
 pub mod pose;
 pub mod render;
 
-pub use game::{Entity, Game, Player, View};
+pub use game::{Entity, Game, Player, Players, View, MAX_PLAYERS};
 pub use golden_sdk::math::{Camera, Fov, ScreenPos, Vec3};
 pub use golden_sdk::player::Team;
 pub use pose::{Pose, PoseCache};

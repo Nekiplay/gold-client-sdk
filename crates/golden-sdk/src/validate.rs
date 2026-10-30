@@ -7,7 +7,8 @@
 use core::ffi::c_void;
 
 use crate::engine::EngineStudioApi;
-use crate::offsets::{client, hw};
+use crate::offsets::{client, entity, hw};
+use crate::player::PlayerExtra;
 use crate::process;
 use crate::renderer::{interface_slot, studio_interface, StudioRenderer, StudioInterface};
 use crate::studio::{IDST, VERSION};
@@ -52,8 +53,88 @@ pub fn run() -> Vec<Check> {
     checks.extend(check_interface(hw_base, client_base));
     checks.extend(check_renderer(client_base));
     checks.extend(check_client_copy_matches(client_base));
+    checks.extend(check_world(hw_base, client_base));
 
     checks
+}
+
+/// Мир: текущая сущность рендерера и записи игроков.
+///
+/// Здесь проверяются смещения, на которых держится весь прикладной слой
+/// (`golden-std`): номер сущности, её модель и `g_PlayerExtraInfo`.
+fn check_world(hw_base: usize, _client_base: usize) -> Vec<Check> {
+    let mut out = Vec::new();
+
+    out.push(Check::require(
+        process::in_range(hw_base + hw::ENTITY_STATE_ARRAY, hw_base, 0x600_0000),
+        "массив entity_state в hw.dll",
+        format!("hw+{:#x}", hw::ENTITY_STATE_ARRAY),
+    ));
+
+    // Текущая сущность рендерера: номер и модель.
+    // SAFETY: статический указатель движка, значение либо null, либо сущность.
+    let current = unsafe { process::read::<usize>(hw_base + hw::P_CURRENT_ENTITY) };
+    if current == 0 || !process::is_readable(current) {
+        out.push(Check::pass("текущая сущность", "нет активной сущности (вне отрисовки)"));
+    } else {
+        // SAFETY: страница сущности проверена на читаемость.
+        let index = unsafe { process::read::<i32>(current + entity::INDEX) };
+        out.push(Check::require(
+            (0..=EngineStudioApi::MAX_EDICTS).contains(&index),
+            "entity: номер сущности",
+            format!("{index} @ {current:#x}"),
+        ));
+        // SAFETY: то же.
+        let model = unsafe { process::read::<usize>(current + entity::MODEL) };
+        let header = unsafe { crate::studio::model_extradata(model as *mut c_void) };
+        out.push(Check::require(
+            header.is_some(),
+            "entity: model_t -> studiohdr_t",
+            match header {
+                Some(model) => format!("{} ({} костей)", model.name(), model.bones().len()),
+                None => format!("model_t {model:#x} не открылся"),
+            },
+        ));
+    }
+
+    // Записи игроков: ник, команда, здоровье.
+    let mut named = 0usize;
+    let mut bad_team = Vec::new();
+    let mut bad_health = Vec::new();
+    for index in 0..=63 {
+        let Some(extra) = PlayerExtra::for_index(index) else {
+            continue;
+        };
+        let name = extra.name();
+        if name.is_empty() {
+            continue;
+        }
+        named += 1;
+        let team = extra.team_number();
+        if team != 0 && !(1..=2).contains(&team) {
+            bad_team.push(format!("{index}:{team}"));
+        }
+        let health = extra.health();
+        if !(-100..=200).contains(&health) {
+            bad_health.push(format!("{index}:{health}"));
+        }
+    }
+    out.push(Check::require(
+        named > 0,
+        "g_PlayerExtraInfo: есть заполненные записи",
+        format!("{named} игроков, база client+{:#x}, шаг {:#x}", client::PLAYER_EXTRA_INFO, client::PLAYER_EXTRA_STRIDE),
+    ));
+    out.push(Check::require(
+        bad_team.is_empty(),
+        "g_PlayerExtraInfo: teamnumber 1 или 2",
+        if bad_team.is_empty() { "все ок".to_string() } else { format!("странные: {}", bad_team.join(" ")) },
+    ));
+    out.push(Check::require(
+        bad_health.is_empty(),
+        "g_PlayerExtraInfo: health в пределах",
+        if bad_health.is_empty() { "все ок".to_string() } else { format!("странные: {}", bad_health.join(" ")) },
+    ));
+    out
 }
 
 /// Таблица `engine_studio_api_t` должна состоять из кода `hw.dll`.

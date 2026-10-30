@@ -7,6 +7,10 @@ license.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+# Хуки объявлены как `thiscall` (соглашение вызовов методов движка), поэтому
+# крейт собирается только под i686: `cargo test --workspace` на x64 его не трогает.
+test = false
+doctest = false
 
 [dependencies]
 golden-sdk = { workspace = true }

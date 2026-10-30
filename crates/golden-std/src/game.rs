@@ -35,18 +35,15 @@ impl Game {
     /// Игрок определяется по записи `g_PlayerExtraInfo` — так же, как это делает
     /// сам клиент для таблицы счёта: запись есть у всех, кого сервер представил
     /// сообщением `TeamInfo`/`ScoreAttrib`, а не только у нарисованных на экране.
-    pub fn get_players(&self) -> impl Iterator<Item = Player> {
-        let api = self.api;
-        (0..=MAX_PLAYERS).filter_map(move |index| {
-            let player = Player::by_index(index)?;
-            let entity = api
-                .entity_by_index(index)
-                .and_then(|raw| Entity::from_raw(index, raw));
-            Some(match entity {
-                Some(entity) => player.with_entity(entity),
-                None => player,
-            })
-        })
+    ///
+    /// ```
+    /// # use golden_std::Game;
+    /// # fn example(game: Game) {
+    /// for name in game.get_players().map(|p| p.name()) { /* ... */ }
+    /// # }
+    /// ```
+    pub fn get_players(&self) -> Players {
+        Players { game: *self, next: -1 }
     }
 
     /// Игрок по номеру сущности.
@@ -155,6 +152,11 @@ impl Entity {
             .unwrap_or_default()
     }
 
+    /// Модель игрока, а не оружия/пропа.
+    pub fn is_player_model(&self) -> bool {
+        self.studio_model().is_some_and(|model| model.is_player_model())
+    }
+
     /// Низкоуровневый доступ — через `golden_sdk`, если чего-то не хватает.
     pub fn raw(&self) -> EntityRef {
         self.raw
@@ -163,6 +165,45 @@ impl Entity {
 
 /// Сколько слотов игроков ведёт клиент (`g_PlayerExtraInfo`).
 pub const MAX_PLAYERS: i32 = 63;
+
+/// Обход всех игроков: [`Game::get_players`].
+///
+/// Ленивый: каждая запись читается в момент обращения, поэтому итерировать
+/// можно в любом месте кадра.
+#[derive(Debug, Clone, Copy)]
+pub struct Players {
+    game: Game,
+    next: i32,
+}
+
+impl Players {
+    /// Только живые.
+    pub fn alive(self) -> impl Iterator<Item = Player> {
+        self.filter(|player| player.is_alive())
+    }
+
+    /// Только указанная команда.
+    pub fn team(self, team: Team) -> impl Iterator<Item = Player> {
+        self.filter(move |player| player.team() == Some(team))
+    }
+}
+
+impl Iterator for Players {
+    type Item = Player;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.next < MAX_PLAYERS {
+            self.next += 1;
+            let index = self.next;
+            if let Some(player) = self.game.get_player(index) {
+                if player.is_known() {
+                    return Some(player);
+                }
+            }
+        }
+        None
+    }
+}
 
 /// Игрок.
 ///
@@ -222,6 +263,16 @@ impl Player {
         PlayerExtra::for_index(self.index)
     }
 
+    /// Сервер уже рассказал про этот слот: есть ник или команда.
+    ///
+    /// Пустые слоты (до первого `TeamInfo`) отсеиваются по этому признаку.
+    pub fn is_known(&self) -> bool {
+        let Some(extra) = self.extra() else {
+            return false;
+        };
+        !extra.name().is_empty() || extra.team_number() != 0
+    }
+
     /// Номер сущности — он же номер игрока в движке.
     pub fn index(&self) -> i32 {
         self.index
@@ -279,6 +330,21 @@ impl Player {
     /// Жив.
     pub fn is_alive(&self) -> bool {
         !self.extra().is_some_and(|extra| extra.is_dead())
+    }
+
+    /// Мёртв (в том числе «ждёт респавна»).
+    pub fn is_dead(&self) -> bool {
+        !self.is_alive()
+    }
+
+    /// Имя команды как его пишет сервер: `TERRORIST`, `CT`, `UNASSIGNED`.
+    pub fn team_name(&self) -> String {
+        self.extra().map(|extra| extra.team_name()).unwrap_or_default()
+    }
+
+    /// Цвет команды для отрисовки; `None` — команда неизвестна.
+    pub fn color(&self) -> Option<golden_sdk::draw::Color> {
+        self.team().map(|team| team.color())
     }
 
     /// Позиция в мире.
