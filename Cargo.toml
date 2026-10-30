@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/golden-sdk", "examples/*", "tools/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+golden-sdk = { path = "crates/golden-sdk" }
+# retour 0.3.1 с crates.io не собирается под i686: его `impl_hookable!`
+# безусловно генерирует `extern "win64"`, а этого ABI на x86 нет. В master это
+# исправлено (`#[cfg(target_arch = "x86_64")]`), поэтому берём git-ревизию.
+# Фича `static-detour` выключена: она тянет nightly (`#![feature(unboxed_closures)]`),
+# а RawDetour работает на stable.
+retour = { git = "https://github.com/Hpmason/retour-rs", rev = "94be4740ec0c624f61a074f439e6351fefc0e697", default-features = false }
+windows-sys = { version = "0.61", features = ["Win32_System_LibraryLoader"] }
+
+# DLL инжектится в 32-битный hl.exe, поэтому боевая сборка — i686.
+# По умолчанию (dev/test на хосте) собирается x86_64: тесты гоняются там.
+[profile.release]
+opt-level = 2
+lto = "thin"
+panic = "abort"
