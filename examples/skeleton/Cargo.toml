@@ -10,4 +10,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 golden-sdk = { workspace = true }
+golden-std = { workspace = true }
 windows-sys = { workspace = true }

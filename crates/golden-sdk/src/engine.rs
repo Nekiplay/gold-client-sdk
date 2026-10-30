@@ -1,4 +1,4 @@
-//! `engine_studio_api_t` — таблица 48 функций, которую движок передаёт клиенту.
+﻿//! `engine_studio_api_t` — таблица 48 функций, которую движок передаёт клиенту.
 //!
 //! Клиент копирует её себе (`client.dll + 0x1B2548`), но обе копии идентичны,
 //! поэтому SDK читает движковую (`hw.dll + 0x271B08`): она живёт дольше и не
@@ -80,6 +80,58 @@ impl EntityRef {
         ((packed & 0xFF) as u8, ((packed >> 8) & 0xFF) as u8)
     }
 
+    /// Указатель на `player_info_t` (поле `+0xB60` сущности).
+    pub fn player_info(&self) -> usize {
+        self.addr() + crate::offsets::entity::PLAYER_INFO
+    }
+
+    /// Номер игрока (слот клиента) из `player_info_t`.
+    ///
+    /// Основной путь — поле [`crate::offsets::entity::INDEX`] (`+0x404`): оно
+    /// заполняется сразу и на всех проверенных сущностях совпадало с индексом.
+    /// `player_info_t` первым полем хранит не номер, поэтому используется только
+    /// как запасной вариант.
+    pub fn player_index(&self) -> i32 {
+        // SAFETY: указатель на сущность проверен при создании.
+        let direct: i32 = unsafe { process::read(self.addr() + crate::offsets::entity::INDEX) };
+        if (0..64).contains(&direct) {
+            return direct;
+        }
+        // SAFETY: указатель на сущность проверен при создании.
+        let fallback: i32 = unsafe { process::read(self.player_info()) };
+        if (0..64).contains(&fallback) { fallback } else { -1 }
+    }
+
+    /// Имя игрока из `player_info_t`.
+    ///
+    /// `player_info_t` — блок `0x30` байт по `+0xB60`: декомпиляция
+    /// `client+0x05F760` копирует его целиком (`FUN_1013cf40(entity + 0xB60, .., 0x30)`),
+    /// а `name[MAXPLAYERNAME]` лежит в его начале, то есть по `+0xB60`.
+    pub fn player_name(&self) -> String {
+        // SAFETY: `read_cstr` сам проверяет читаемость страниц.
+        process::read_cstr(self.player_info(), 32).unwrap_or_default()
+    }
+    /// Номер модели тела (`modelindex`).
+    pub fn model_index(&self) -> i32 {
+        // SAFETY: указатель проверен при создании.
+        unsafe { process::read(self.addr() + crate::offsets::entity::MODEL_INDEX) }
+    }
+
+    /// Номер модели оружия в руках (`weaponmodel`), 0 — оружия нет.
+    pub fn weapon_model_index(&self) -> i32 {
+        // SAFETY: указатель проверен при создании.
+        let index: i32 = unsafe { process::read(self.addr() + crate::offsets::entity::WEAPON_MODEL) };
+        if (0..8192).contains(&index) { index } else { 0 }
+    }
+
+    /// Имя модели оружия в руках, например `w_usp.mdl`.
+    pub fn weapon_model_name(&self) -> Option<String> {
+        let index = self.weapon_model_index();
+        if index == 0 {
+            return None;
+        }
+        EngineStudioApi::for_engine()?.model_name_by_index(index)
+    }
     /// Флаги рендера (бит 1 — «не рисовать»).
     pub fn render_flags(&self) -> u32 {
         // SAFETY: указатель проверен при создании.
@@ -101,6 +153,63 @@ impl EntityRef {
             unsafe { process::read(addr) }
         })
     }
+}
+
+/// Выполняет консольную команду как из консоли: `"+jump"`, `"-jump"`,
+/// `"say hello"`, `"cl_crosshair_color 0 255 0"`.
+///
+/// Команда не выполняется мгновенно: она уходит в командный буфер движка
+/// (`Cbuf_AddText`, `hw+0x031E80`) и разбирается на ближайшем кадре — как если
+/// бы её напечатали в консоли. Поэтому `+jump` нужно добавлять каждый кадр,
+/// а снимать — парным `-jump`.
+///
+/// Возвращает `false`, если движок ещё не загружен или строка содержит
+/// нулевой байт.
+pub fn run_command(command: &str) -> bool {
+    let Some(base) = process::hw_base() else {
+        return false;
+    };
+    let Ok(text) = std::ffi::CString::new(command) else {
+        return false;
+    };
+    // SAFETY: `hw+0x031E80` — `Cbuf_AddText(const char *)`, cdecl; строка живёт
+    // до возврата, дальше движок копирует её в свой буфер.
+    let add_text: extern "C" fn(*const i8) -> i32 =
+        unsafe { core::mem::transmute(base + hw::CBUF_ADD_TEXT) };
+    add_text(text.as_ptr());
+    true
+}
+
+/// Индекс модели оружия в руках у рисуемого игрока.
+///
+/// `player_info` — второй аргумент `StudioDrawPlayer`. Движок сам кладёт сюда
+/// индекс модели оружия ([`crate::offsets::player_info::WEAPON_MODEL`]) и рисует
+/// её вторым проходом — значит это ровно то оружие, которое видно в руках,
+/// а не устаревшая копия в сущности.
+///
+/// `None`, если оружия нет (`0`) или указатель пуст.
+pub fn player_weapon_model(player_info: *const c_void) -> Option<i32> {
+    if player_info.is_null() {
+        return None;
+    }
+    // SAFETY: указатель пришёл от движка; читаем одно int-поле его структуры.
+    let index: i32 = unsafe {
+        process::read((player_info as usize) + crate::offsets::player_info::WEAPON_MODEL)
+    };
+    (index > 0 && index < 0x4000).then_some(index)
+}
+
+/// Номер игрока, которого движок рисует: `player_info + 0x04`.
+///
+/// `None`, если указатель пуст или номер вне диапазона.
+pub fn player_of_draw(player_info: *const c_void) -> Option<i32> {
+    if player_info.is_null() {
+        return None;
+    }
+    // SAFETY: указатель пришёл от движка; читаем одно int-поле его структуры.
+    let index: i32 =
+        unsafe { process::read((player_info as usize) + crate::offsets::player_info::INDEX) };
+    (0..2048).contains(&index).then_some(index)
 }
 
 /// Таблица функций движка.
@@ -199,6 +308,36 @@ impl EngineStudioApi {
     /// а `GetEntityByIndex` — официальный способ движка отдать сущность по
     /// номеру, поэтому индекс надёжнее получить сравнением адресов. Список
     /// обходим один раз на сущность (результат стоит кэшировать у себя).
+    /// Ищет номер сущности по её позиции и модели.
+    ///
+    /// `GetEntityByIndex` возвращает **лёгкую** `cl_entity_t` (`0x154` байта),
+    /// а рендерер работает с отдельной, более крупной «рендер-сущностью», поэтому
+    /// сравнение адресов не срабатывает. Совпадают у них позиция и модель — по
+    /// ним и ищем.
+    pub fn entity_index_by_origin(&self, origin: Vec3, model_name: &str) -> Option<i32> {
+        let mut best: Option<(i32, f32)> = None;
+        for index in 1..=Self::MAX_EDICTS {
+            let Some(entity) = self.entity_by_index(index) else {
+                continue;
+            };
+            let delta = entity.origin() - origin;
+            let distance = delta.dot(delta);
+            if !distance.is_finite() || distance > 4.0 {
+                continue;
+            }
+            let matches_model = entity
+                .studio_model()
+                .is_some_and(|m| m.name().eq_ignore_ascii_case(model_name));
+            if !matches_model && distance > 0.01 {
+                continue;
+            }
+            if best.is_none_or(|(_, d)| distance < d) {
+                best = Some((index, distance));
+            }
+        }
+        best.map(|(index, _)| index)
+    }
+
     pub fn entity_index(&self, entity: EntityRef) -> Option<i32> {
         let target = entity.addr();
         for index in 0..=Self::MAX_EDICTS {
@@ -247,6 +386,39 @@ impl EngineStudioApi {
         let f: unsafe extern "C" fn() -> i32 = self.func(api::STUDIO_CHECK_BBOX)?;
         // SAFETY: сигнатура слота.
         Some(unsafe { f() })
+    }
+
+    /// `GetEntityState(index)` — состояние сущности из сетевого массива движка
+    /// (`hw.dll + 0x2F90A18`, шаг [`crate::offsets::entity_state::STRIDE`]).
+    ///
+    /// Именно здесь лежат поля, которых нет в `cl_entity_t`: например модель
+    /// оружия в руках игрока (`weaponmodel`).
+    pub fn entity_state(&self, index: i32) -> Option<*const u8> {
+        let f: unsafe extern "C" fn(i32) -> *const u8 = self.func(api::GET_ENTITY_STATE)?;
+        // SAFETY: сигнатура слота; индекс проверяет движок.
+        let ptr = unsafe { f(index) };
+        (!ptr.is_null()).then_some(ptr)
+    }
+
+    /// `Mod_ForIndex(index)` — `model_t *` по индексу из массива моделей.
+    pub fn model_by_index(&self, index: i32) -> Option<*mut c_void> {
+        let f: unsafe extern "C" fn(i32) -> *mut c_void = self.func(api::MOD_FOR_INDEX)?;
+        // SAFETY: сигнатура слота; неверный индекс движок отсекает сам.
+        let ptr = unsafe { f(index) };
+        (!ptr.is_null()).then_some(ptr)
+    }
+
+    /// Имя модели по индексу (`terror\terror.mdl`, `v_m4a1.mdl`, ...).
+    ///
+    /// Заголовок читается **напрямую** из `model_t` (`+0x184`), без вызова
+    /// `Mod_Extradata`: тот при ошибке зовёт `Host_Error` («Mod_Extradata:
+    /// caching failed») и роняет игру. Если модель ещё не разобрана движком,
+    /// `extradata` пуст — тогда имени просто нет.
+    pub fn model_name_by_index(&self, index: i32) -> Option<String> {
+        let model = self.model_by_index(index)?;
+        // SAFETY: `model_extradata` проверяет читаемость и магию заголовка.
+        let studio = unsafe { crate::studio::model_extradata(model) }?;
+        Some(studio.name().to_string())
     }
 
     /// `Mod_ForName(int load, const char *name)`.

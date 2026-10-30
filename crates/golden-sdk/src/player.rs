@@ -127,6 +127,69 @@ impl PlayerExtra {
         crate::process::read_cstr(self.addr + crate::offsets::client::PLAYER_EXTRA_TEAMNAME, 16)
             .unwrap_or_default()
     }
+
+    /// Байт-флаг внутри записи.
+    fn flag(&self, offset: usize) -> bool {
+        let addr = self.addr + offset;
+        // SAFETY: страница проверяется; читаем один байт внутри того же блока.
+        crate::process::is_readable(addr) && unsafe { crate::process::read::<u8>(addr) } != 0
+    }
+
+    /// Несёт ли игрок бомбу (C4).
+    pub fn has_bomb(&self) -> bool {
+        self.flag(crate::offsets::client::PLAYER_EXTRA_BOMB)
+    }
+
+    /// Есть ли у игрока дефуз-кит.
+    pub fn has_defuser(&self) -> bool {
+        self.flag(crate::offsets::client::PLAYER_EXTRA_DEFUSER)
+    }
+
+    /// VIP в режиме `as_*`.
+    pub fn is_vip(&self) -> bool {
+        self.flag(crate::offsets::client::PLAYER_EXTRA_VIP)
+    }
+
+    /// Мёртв ли игрок (по данным клиента, обновляется таблицей счёта).
+    pub fn is_dead(&self) -> bool {
+        self.flag(crate::offsets::client::PLAYER_EXTRA_DEAD)
+    }
+
+    /// Имя игрока: в записи лежит указатель на строку (`client+0x0BEC00` передаёт
+    /// его в таблицу счёта как значение ключа `"name"`, а `client+0x0BA530`
+    /// копирует его в первый слот выходной структуры).
+    pub fn name(&self) -> String {
+        // SAFETY: страница проверяется `read_cstr`.
+        let ptr: usize = unsafe { crate::process::read(self.addr) };
+        if ptr < 0x10000 {
+            return String::new();
+        }
+        crate::process::read_cstr(ptr, 32).unwrap_or_default()
+    }
+
+    /// Убийства — ключ `"frags"` в таблице счёта.
+    pub fn frags(&self) -> i32 {
+        // SAFETY: адрес проверен в `for_index`.
+        unsafe { crate::process::read(self.addr + crate::offsets::client::PLAYER_EXTRA_FRAGS) }
+    }
+
+    /// Смерти — ключ `"deaths"` в таблице счёта.
+    pub fn deaths(&self) -> i32 {
+        // SAFETY: адрес проверен в `for_index`.
+        unsafe { crate::process::read(self.addr + crate::offsets::client::PLAYER_EXTRA_DEATHS) }
+    }
+
+    /// Здоровье — ключ `"health"`.
+    pub fn health(&self) -> i32 {
+        // SAFETY: адрес проверен в `for_index`.
+        unsafe { crate::process::read(self.addr + crate::offsets::client::PLAYER_EXTRA_HEALTH) }
+    }
+
+    /// Деньги — ключ `"account"`.
+    pub fn money(&self) -> i32 {
+        // SAFETY: адрес проверен в `for_index`.
+        unsafe { crate::process::read(self.addr + crate::offsets::client::PLAYER_EXTRA_MONEY) }
+    }
 }
 
 /// Имя модели без каталогов и расширения.
@@ -166,6 +229,52 @@ pub fn is_player_model_name(name: &str) -> bool {
         return true;
     }
     model_dir(name).is_some_and(|dir| dir.eq_ignore_ascii_case(&stem))
+}
+
+/// Читаемое имя оружия по имени модели: `w_ak47.mdl` → `AK-47`.
+///
+/// Неизвестное имя не выбрасывается: возвращается в верхнем регистре без
+/// префикса, чтобы на экране было видно хотя бы «что-то осмысленное».
+pub fn weapon_display_name(model_name: &str) -> String {
+    let stem = model_stem(model_name).to_ascii_lowercase();
+    let bare = stem
+        .strip_prefix("w_")
+        .or_else(|| stem.strip_prefix("p_"))
+        .or_else(|| stem.strip_prefix("v_"))
+        .unwrap_or(&stem);
+
+    let known = match bare {
+        "knife" => "Knife",
+        "ak47" => "AK-47",
+        "m4a1" => "M4A1",
+        "aug" => "AUG",
+        "sg552" => "SG 552",
+        "sg550" => "SG 550",
+        "g3sg1" => "G3SG1",
+        "awp" => "AWP",
+        "scout" => "Scout",
+        "m3" => "M3",
+        "xm1014" => "XM1014",
+        "mp5" | "mp5navy" => "MP5",
+        "tmp" => "TMP",
+        "p90" => "P90",
+        "mac10" => "MAC-10",
+        "ump45" => "UMP-45",
+        "galil" => "Galil",
+        "famas" => "FAMAS",
+        "deagle" => "Deagle",
+        "usp" => "USP",
+        "glock18" => "Glock-18",
+        "p228" => "P228",
+        "elite" => "Berettas",
+        "fiveseven" => "Five-SeveN",
+        "hegrenade" => "HE",
+        "flashbang" => "Flash",
+        "smokegrenade" => "Smoke",
+        "c4" => "C4",
+        _ => return bare.to_ascii_uppercase(),
+    };
+    known.to_string()
 }
 
 #[cfg(test)]

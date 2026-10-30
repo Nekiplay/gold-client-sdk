@@ -1,0 +1,190 @@
+//! Отрисовка: линии в мире, скелет, круг у головы, текст.
+//!
+//! [`Overlay`] создаётся один раз на кадр и знает камеру, FOV и размер экрана,
+//! поэтому мировые точки проецируются без ручной возни с матрицами.
+//!
+//! ```no_run
+//! # use golden_std::{Color, Overlay};
+//! # use golden_sdk::{renderer::StudioRenderer, studio::StudioModel};
+//! # fn example(renderer: &StudioRenderer, model: &StudioModel) {
+//! let overlay = Overlay::new().unwrap();
+//! overlay.skeleton(renderer, model, Color::GREEN, 1.5);
+//! # }
+//! ```
+
+use golden_sdk::draw::{self, Gl};
+use golden_sdk::math::{Camera, Fov, ScreenPos, Vec3};
+use golden_sdk::renderer::StudioRenderer;
+use golden_sdk::studio::StudioModel;
+
+use crate::game::Game;
+
+pub use golden_sdk::draw::Color;
+
+/// Ширина окна игры в пикселях.
+const DEFAULT_FOV: f32 = 90.0;
+
+/// Отрисовка поверх кадра.
+///
+/// Создавать и использовать только из хука отрисовки (`DrawModel`/`DrawPlayer`):
+/// в этот момент GL-контекст активен и камера уже посчитана движком.
+#[derive(Debug)]
+pub struct Overlay {
+    gl: &'static Gl,
+    camera: Camera,
+    fov: Fov,
+    viewport: (f32, f32),
+    text_scale: f32,
+}
+
+impl Overlay {
+    /// Текущий кадр: камера, FOV и вьюпорт.
+    ///
+    /// `None`, если движок ещё не готов или GL не загрузился.
+    pub fn new() -> Option<Self> {
+        let gl = unsafe { Gl::get() }?;
+        let (_, _, width, height) = unsafe { gl.viewport() }?;
+        let view = Game::get()?.get_view()?;
+        // FOV движок держит по соглашению 4:3 (`default_fov` 90), а ширину
+        // расширяет под аспект окна.
+        let fov = Fov::from_horizontal(DEFAULT_FOV, width / height);
+        Some(Self {
+            gl,
+            camera: Camera::new(view.origin, view.forward, view.right, view.up),
+            fov,
+            viewport: (width, height),
+            text_scale: 2.0,
+        })
+    }
+
+    /// Размер экрана в пикселях.
+    pub fn viewport(&self) -> (f32, f32) {
+        self.viewport
+    }
+
+    /// Масштаб текста подписей (по умолчанию 2).
+    pub fn text_scale(&mut self, scale: f32) {
+        self.text_scale = scale.max(0.5);
+    }
+
+    /// Мировая точка → пиксели экрана; `None`, если точка за камерой.
+    pub fn project(&self, world: Vec3) -> Option<ScreenPos> {
+        self.camera.project(world, self.fov, self.viewport)
+    }
+
+    /// Отрезки в мировых координатах с проверкой глубины (прячутся за телом).
+    pub fn lines(&self, segments: &[(Vec3, Vec3)], color: Color, width: f32) {
+        unsafe { self.gl.lines(color, width, segments) }
+    }
+
+    /// То же, но видно сквозь модели и стены.
+    pub fn xray(&self, segments: &[(Vec3, Vec3)], color: Color, width: f32) {
+        unsafe { self.gl.lines_xray(color, width, segments) }
+    }
+
+    /// Перерисовывает модель контурами в цвете команды.
+    ///
+    /// `false`, если движок не дал слот или GL не поднят.
+    pub fn outline(&self, renderer: &StudioRenderer, color: Color, width: f32) -> bool {
+        renderer.render_wireframe(color, width)
+    }
+
+    /// Коробка вокруг модели: 12 рёбер AABB, видимых сквозь стены.
+    ///
+    /// `min`/`max` — габариты в собственных координатах модели; они
+    /// сдвигаются на `origin`, чтобы коробка встала ровно по телу.
+    pub fn box_xray(&self, min: Vec3, max: Vec3, origin: Vec3, color: Color, width: f32) {
+        let corners = [
+            Vec3::new(min.x, min.y, min.z),
+            Vec3::new(max.x, min.y, min.z),
+            Vec3::new(min.x, max.y, min.z),
+            Vec3::new(max.x, max.y, min.z),
+            Vec3::new(min.x, min.y, max.z),
+            Vec3::new(max.x, min.y, max.z),
+            Vec3::new(min.x, max.y, max.z),
+            Vec3::new(max.x, max.y, max.z),
+        ]
+        .map(|point| point + origin);
+        const EDGES: [(usize, usize); 12] = [
+            (0, 1),
+            (0, 2),
+            (1, 3),
+            (2, 3),
+            (4, 5),
+            (4, 6),
+            (5, 7),
+            (6, 7),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ];
+        let segments: Vec<(Vec3, Vec3)> = EDGES
+            .iter()
+            .map(|(a, b)| (corners[*a], corners[*b]))
+            .collect();
+        self.xray(&segments, color, width);
+    }
+
+    /// Отрезки скелета в мировых координатах, видимые сквозь модель.
+    pub fn skeleton_lines(&self, segments: &[(Vec3, Vec3)], color: Color, width: f32) {
+        self.xray(segments, color, width);
+    }
+
+    /// Круг в мировой точке — билиборд, всегда лицом к камере.
+    pub fn circle_at(&self, center: Vec3, radius: f32, color: Color, width: f32) {
+        let Some(renderer) = StudioRenderer::global() else {
+            return;
+        };
+        unsafe {
+            self.gl.ring(
+                center,
+                renderer.view_right(),
+                renderer.view_up(),
+                radius,
+                color,
+                width,
+                16,
+            );
+        }
+    }
+
+    /// Скелет модели — по костям, которые движок только что посчитал.
+    pub fn skeleton(&self, renderer: &StudioRenderer, model: &StudioModel, color: Color, width: f32) {
+        let segments = renderer.skeleton_lines_checked(model);
+        self.xray(&segments, color, width);
+    }
+
+    /// Круг у головы: билиборд в мире, всегда лицом к камере.
+    pub fn head_circle(
+        &self,
+        renderer: &StudioRenderer,
+        model: &StudioModel,
+        color: Color,
+        radius: f32,
+        width: f32,
+    ) {
+        let Some(center) = renderer.head_point(model) else {
+            return;
+        };
+        unsafe {
+            self.gl
+                .ring(center, renderer.view_right(), renderer.view_up(), radius, color, width, 16);
+        }
+    }
+
+    /// Подпись у мировой точки. `above` — над точкой, иначе под ней.
+    pub fn label(&self, world: Vec3, text: &str, color: Color, above: bool) {
+        let Some(pos) = self.project(world) else {
+            return;
+        };
+        let scale = self.text_scale;
+        let offset = if above {
+            -(draw::text_height(scale) + 6.0)
+        } else {
+            8.0
+        };
+        let x = pos.x - draw::text_width(text, scale) / 2.0;
+        unsafe { self.gl.text(x, pos.y + offset, text, color, scale) }
+    }
+}

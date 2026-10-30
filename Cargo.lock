@@ -27,6 +27,7 @@ name = "example-skeleton"
 version = "0.1.0"
 dependencies = [
  "golden-sdk",
+ "golden-std",
  "windows-sys 0.61.2",
 ]
 
@@ -53,6 +54,13 @@ version = "0.1.0"
 dependencies = [
  "retour",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "golden-std"
+version = "0.1.0"
+dependencies = [
+ "golden-sdk",
 ]
 
 [[package]]

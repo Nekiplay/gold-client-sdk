@@ -98,6 +98,110 @@ pub struct StudioBone {
 
 const _: () = assert!(size_of::<StudioBone>() == 0x70);
 
+/// Группы хитбоксов — те же номера, что в `mstudiohitbox_t::group`.
+///
+/// Совпадают с `HITGROUP_*` из HLSDK и с тем, как движок считает попадания:
+/// `1` — голова, `4` — левая рука, `5` — правая, `6` — левая нога, `7` — правая.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitGroup {
+    /// Общее тело / бункер.
+    Generic,
+    /// Голова.
+    Head,
+    /// Грудь.
+    Chest,
+    /// Живот.
+    Stomach,
+    /// Левая рука.
+    LeftArm,
+    /// Правая рука.
+    RightArm,
+    /// Левая нога.
+    LeftLeg,
+    /// Правая нога.
+    RightLeg,
+    /// Неизвестная группа (не 0..=7).
+    Other(i32),
+}
+
+impl HitGroup {
+    /// Группа по номеру из модели.
+    pub fn from_number(number: i32) -> Self {
+        match number {
+            0 => Self::Generic,
+            1 => Self::Head,
+            2 => Self::Chest,
+            3 => Self::Stomach,
+            4 => Self::LeftArm,
+            5 => Self::RightArm,
+            6 => Self::LeftLeg,
+            7 => Self::RightLeg,
+            other => Self::Other(other),
+        }
+    }
+
+    /// Номер группы.
+    pub fn number(self) -> i32 {
+        match self {
+            Self::Generic => 0,
+            Self::Head => 1,
+            Self::Chest => 2,
+            Self::Stomach => 3,
+            Self::LeftArm => 4,
+            Self::RightArm => 5,
+            Self::LeftLeg => 6,
+            Self::RightLeg => 7,
+            Self::Other(other) => other,
+        }
+    }
+
+    /// Русское имя для логов и подписей.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Generic => "тело",
+            Self::Head => "голова",
+            Self::Chest => "грудь",
+            Self::Stomach => "живот",
+            Self::LeftArm => "левая рука",
+            Self::RightArm => "правая рука",
+            Self::LeftLeg => "левая нога",
+            Self::RightLeg => "правая нога",
+            Self::Other(_) => "?",
+        }
+    }
+}
+
+/// Хитбокс, переведённый в мировые координаты.
+#[derive(Debug, Clone, Copy)]
+pub struct WorldHitbox {
+    /// Группа: голова, руки, ноги, тело.
+    pub group: HitGroup,
+    /// Кость, к которой привязан хитбокс.
+    pub bone: usize,
+    /// Мировой AABB.
+    pub min: Vec3,
+    /// Мировой AABB.
+    pub max: Vec3,
+}
+
+impl WorldHitbox {
+    /// Центр объёма — то, вокруг чего рисуется метка.
+    pub fn center(&self) -> Vec3 {
+        (self.min + self.max) * 0.5
+    }
+
+    /// Верхняя точка по мировому Z.
+    pub fn top(&self) -> Vec3 {
+        let center = self.center();
+        Vec3::new(center.x, center.y, self.max.z)
+    }
+
+    /// Размеры объёма.
+    pub fn size(&self) -> Vec3 {
+        self.max - self.min
+    }
+}
+
 /// `mstudiobonecontroller_t` (`0x18`). Поля не проверялись по значениям —
 /// используется только размер (для контроля разметки массива).
 #[repr(C)]
@@ -332,6 +436,20 @@ impl StudioModel {
         crate::player::is_player_model_name(self.name())
     }
 
+    /// Габариты модели в её собственных координатах: `(минимум, максимум)`.
+    ///
+    /// Берутся из заголовка (`min`/`max` — объём, покрывающий все анимации), а
+    /// не из хитбоксов: так коробка охватывает и тело, и руки в любой позе.
+    pub fn hull(&self) -> Option<(Vec3, Vec3)> {
+        let header = self.header();
+        let (min, max) = (header.min, header.max);
+        let size = Vec3::new(max.x - min.x, max.y - min.y, max.z - min.z);
+        if !min.is_finite() || !max.is_finite() || size.x <= 0.0 || size.z <= 0.0 {
+            return None;
+        }
+        Some((min, max))
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -420,6 +538,17 @@ impl StudioModel {
             })
     }
 
+    /// Собирает скелет по готовым позициям костей.
+    ///
+    /// Нужен, когда позиции сняты в один момент (внутри `StudioSetupBones`), а
+    /// рисуются позже: топология берётся из модели, координаты — из `origins`.
+    /// Рёбра с несуществующими индексами пропускаются.
+    pub fn skeleton_lines_with(&self, origins: &[Vec3]) -> Vec<(Vec3, Vec3)> {
+        self.skeleton_edges()
+            .filter_map(|(child, parent)| Some((*origins.get(parent)?, *origins.get(child)?)))
+            .collect()
+    }
+
     /// Находит кость по имени (регистронезависимо): удобно для «головы», «шеи» и т.п.
     pub fn find_bone(&self, name: &str) -> Option<usize> {
         self.bones()
@@ -448,6 +577,18 @@ impl BoneMatrix {
         Vec3::new(self.m[3], self.m[7], self.m[11])
     }
 
+    /// Преобразует точку из системы координат кости в мир.
+    ///
+    /// Матрица хранится как поворот `3x3` плюс трансляция в третьей колонке,
+    /// поэтому `v' = R * v + T`.
+    pub fn transform_point(&self, point: Vec3) -> Vec3 {
+        Vec3::new(
+            self.m[0] * point.x + self.m[1] * point.y + self.m[2] * point.z + self.m[3],
+            self.m[4] * point.x + self.m[5] * point.y + self.m[6] * point.z + self.m[7],
+            self.m[8] * point.x + self.m[9] * point.y + self.m[10] * point.z + self.m[11],
+        )
+    }
+
     pub fn is_finite(&self) -> bool {
         self.m.iter().all(|v| v.is_finite())
     }
@@ -469,12 +610,17 @@ pub unsafe fn bone_matrix(base: *const BoneMatrix, bone: usize) -> BoneMatrix {
 /// `model` должен быть валидным `model_t *`.
 pub unsafe fn model_extradata(model: *mut c_void) -> Option<StudioModel> {
     let addr = model as usize;
-    if addr == 0 {
+    if addr == 0 || !crate::process::is_readable(addr) {
         return None;
     }
-    // SAFETY: контракт функции — валидный model_t.
+    // SAFETY: контракт функции — валидный model_t; страница проверена.
     let field = addr + crate::offsets::model::EXTRADATA;
+    if !crate::process::is_readable(field) {
+        return None;
+    }
+    // SAFETY: поле лежит внутри читаемой страницы.
     let hdr = unsafe { *(field as *const *const StudioHeader) };
+    // SAFETY: `from_ptr` проверяет магию заголовка.
     unsafe { StudioModel::from_ptr(hdr) }
 }
 

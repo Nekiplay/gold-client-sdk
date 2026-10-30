@@ -1,0 +1,12 @@
+[package]
+name = "golden-std"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Удобный слой над golden-sdk: игра, игроки, отрисовка"
+
+[lib]
+name = "golden_std"
+
+[dependencies]
+golden-sdk = { workspace = true }

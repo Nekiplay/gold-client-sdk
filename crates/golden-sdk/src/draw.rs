@@ -29,12 +29,20 @@ use crate::math::Vec3;
 
 /// `GL_LINES`.
 pub const GL_LINES: u32 = 0x0001;
+const GL_LINE_LOOP: u32 = 0x0002;
+const GL_QUADS: u32 = 0x0007;
+const GL_MODELVIEW: u32 = 0x1700;
+const GL_PROJECTION: u32 = 0x1701;
+const GL_VIEWPORT: u32 = 0x0BA2;
 const GL_BLEND: u32 = 0x0BE2;
 const GL_SRC_ALPHA: u32 = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
 const GL_TEXTURE_2D: u32 = 0x0DE1;
 const GL_DEPTH_TEST: u32 = 0x0B71;
 const GL_ALL_ATTRIB_BITS: u32 = 0x000F_FFFF;
+/// `glPolygonMode` — какие грани и как рисовать.
+const GL_FRONT_AND_BACK: u32 = 0x0408;
+const GL_LINE: u32 = 0x1B01;
 
 /// Как рисовать относительно теста глубины.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +89,12 @@ type LineWidthFn = unsafe extern "system" fn(f32);
 type PushAttribFn = unsafe extern "system" fn(u32);
 type PopAttribFn = unsafe extern "system" fn();
 type BlendFuncFn = unsafe extern "system" fn(u32, u32);
+type MatrixModeFn = unsafe extern "system" fn(u32);
+type LoadIdentityFn = unsafe extern "system" fn();
+type OrthoFn = unsafe extern "system" fn(f64, f64, f64, f64, f64, f64);
+type PushMatrixFn = unsafe extern "system" fn();
+type GetIntegervFn = unsafe extern "system" fn(u32, *mut i32);
+type PolygonModeFn = unsafe extern "system" fn(u32, u32);
 
 /// Указатели на нужные функции `opengl32.dll`.
 #[derive(Debug)]
@@ -95,6 +109,13 @@ struct Fns {
     push_attrib: PushAttribFn,
     pop_attrib: PopAttribFn,
     blend_func: BlendFuncFn,
+    matrix_mode: MatrixModeFn,
+    load_identity: LoadIdentityFn,
+    ortho: OrthoFn,
+    push_matrix: PushMatrixFn,
+    pop_matrix: PushMatrixFn,
+    get_integerv: GetIntegervFn,
+    polygon_mode: PolygonModeFn,
 }
 
 /// Доступ к рисованию OpenGL.
@@ -153,6 +174,13 @@ impl Gl {
                     push_attrib: resolve(module, c"glPushAttrib")?,
                     pop_attrib: resolve(module, c"glPopAttrib")?,
                     blend_func: resolve(module, c"glBlendFunc")?,
+                    matrix_mode: resolve(module, c"glMatrixMode")?,
+                    load_identity: resolve(module, c"glLoadIdentity")?,
+                    ortho: resolve(module, c"glOrtho")?,
+                    push_matrix: resolve(module, c"glPushMatrix")?,
+                    pop_matrix: resolve(module, c"glPopMatrix")?,
+                    get_integerv: resolve(module, c"glGetIntegerv")?,
+                    polygon_mode: resolve(module, c"glPolygonMode")?,
                 },
             })
         }
@@ -215,6 +243,239 @@ impl Gl {
             }
             (self.fns.end)();
             (self.fns.pop_attrib)();
+        }
+    }
+
+    /// Контуры уже подготовленной модели: полигоны переводятся в линии, затем
+    /// вызывается `render` — движок рисует ту же геометрию, что и тело.
+    ///
+    /// Своё состояние GL (режим полигонов, текстура, глубина, цвет, толщина
+    /// линий) закрыто в `glPushAttrib`/`glPopAttrib`, поэтому после вызова
+    /// движок продолжает рисовать как ни в чём не бывало.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`]; `render` должен рисовать только в текущем GL-контексте.
+    pub unsafe fn wireframe(&self, color: Color, width: f32, render: impl FnOnce()) {
+        // SAFETY: контракт передан вызывающим.
+        unsafe {
+            (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
+            (self.fns.disable)(GL_TEXTURE_2D);
+            (self.fns.disable)(GL_DEPTH_TEST);
+            (self.fns.enable)(GL_BLEND);
+            (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            (self.fns.polygon_mode)(GL_FRONT_AND_BACK, GL_LINE);
+            (self.fns.line_width)(width.clamp(1.0, 10.0));
+            (self.fns.color4f)(color.r, color.g, color.b, color.a);
+            render();
+            (self.fns.pop_attrib)();
+        }
+    }
+
+    /// Размер вьюпорта `(x, y, width, height)` в пикселях.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`].
+    pub unsafe fn viewport(&self) -> Option<(f32, f32, f32, f32)> {
+        let mut vp = [0i32; 4];
+        // SAFETY: контракт передан вызывающим; массив нужного размера.
+        unsafe { (self.fns.get_integerv)(GL_VIEWPORT, vp.as_mut_ptr()) };
+        if vp[2] <= 0 || vp[3] <= 0 {
+            return None;
+        }
+        Some((vp[0] as f32, vp[1] as f32, vp[2] as f32, vp[3] as f32))
+    }
+
+    /// Круг в мире, повёрнутый к камере (билиборд).
+    ///
+    /// `right`/`up` — базис камеры из
+    /// [`crate::engine::EngineStudioApi::view_info`], `radius` — в юнитах мира.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`].
+    pub unsafe fn ring(
+        &self,
+        center: Vec3,
+        right: Vec3,
+        up: Vec3,
+        radius: f32,
+        color: Color,
+        width: f32,
+        segments: usize,
+    ) {
+        let segments = segments.max(6);
+        // SAFETY: контракт передан вызывающим.
+        unsafe {
+            (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
+            (self.fns.disable)(GL_TEXTURE_2D);
+            (self.fns.disable)(GL_DEPTH_TEST);
+            (self.fns.enable)(GL_BLEND);
+            (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            (self.fns.line_width)(width.clamp(1.0, 10.0));
+            (self.fns.color4f)(color.r, color.g, color.b, color.a);
+            (self.fns.begin)(GL_LINE_LOOP);
+            for i in 0..segments {
+                let angle = i as f32 / segments as f32 * core::f32::consts::TAU;
+                let (sin, cos) = angle.sin_cos();
+                let p = center + right * (cos * radius) + up * (sin * radius);
+                (self.fns.vertex3f)(p.x, p.y, p.z);
+            }
+            (self.fns.end)();
+            (self.fns.pop_attrib)();
+        }
+    }
+
+    /// Текст в координатах экрана (пиксели, начало — левый верхний угол).
+    ///
+    /// Свой шрифт `5x7` — не зависит ни от шрифтов игры, ни от GDI: рисуем
+    /// прямоугольниками в ортопроекции, состояние GL возвращаем как было.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`].
+    pub unsafe fn text(&self, x: f32, y: f32, text: &str, color: Color, scale: f32) {
+        let Some((vx, vy, vw, vh)) = (unsafe { self.viewport() }) else {
+            return;
+        };
+        let scale = scale.max(0.5);
+        // SAFETY: контракт передан вызывающим.
+        unsafe {
+            (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
+            (self.fns.disable)(GL_TEXTURE_2D);
+            (self.fns.disable)(GL_DEPTH_TEST);
+            (self.fns.enable)(GL_BLEND);
+            (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+            (self.fns.matrix_mode)(GL_PROJECTION);
+            (self.fns.push_matrix)();
+            (self.fns.load_identity)();
+            // Ось Y вниз — так координаты текста совпадают с пикселями экрана.
+            // Глифы при этом выводятся в перевёрнутом порядке строк: движок
+            // держит проекцию с вертикальным отражением, и без этого текст
+            // выходит вверх ногами (см. `py` ниже).
+            (self.fns.ortho)(0.0, vw as f64, vh as f64, 0.0, -1.0, 1.0);
+            (self.fns.matrix_mode)(GL_MODELVIEW);
+            (self.fns.push_matrix)();
+            (self.fns.load_identity)();
+
+            (self.fns.color4f)(color.r, color.g, color.b, color.a);
+            (self.fns.begin)(GL_QUADS);
+            for (index, ch) in text.chars().enumerate() {
+                let glyph = font::glyph(ch);
+                let origin_x = x + (vx + index as f32 * font::ADVANCE * scale);
+                for (row, bits) in glyph.iter().enumerate() {
+                    for col in 0..font::WIDTH {
+                        // Старший бит строки — левая колонка глифа (шрифт 5x7,
+                        // `'L'` = `0b10000` в верхних строках), поэтому колонку
+                        // берём с конца: иначе текст выходит зеркальным.
+                        if bits & (1 << (font::WIDTH - 1 - col)) == 0 {
+                            continue;
+                        }
+                        let px = origin_x + col as f32 * scale;
+                        // Строки глифа выводятся снизу вверх: проекция движка
+                        // здесь вертикально отражена (см. `ortho` выше).
+                        let py = y + vy + row as f32 * scale;
+                        (self.fns.vertex3f)(px, py, 0.0);
+                        (self.fns.vertex3f)(px + scale, py, 0.0);
+                        (self.fns.vertex3f)(px + scale, py + scale, 0.0);
+                        (self.fns.vertex3f)(px, py + scale, 0.0);
+                    }
+                }
+            }
+            (self.fns.end)();
+
+            (self.fns.matrix_mode)(GL_MODELVIEW);
+            (self.fns.pop_matrix)();
+            (self.fns.matrix_mode)(GL_PROJECTION);
+            (self.fns.pop_matrix)();
+            (self.fns.matrix_mode)(GL_MODELVIEW);
+            (self.fns.pop_attrib)();
+        }
+    }
+}
+
+/// Ширина текста в пикселях при заданном масштабе.
+pub fn text_width(text: &str, scale: f32) -> f32 {
+    text.chars().count() as f32 * font::ADVANCE * scale
+}
+
+/// Высота строки в пикселях при заданном масштабе.
+pub fn text_height(scale: f32) -> f32 {
+    font::HEIGHT as f32 * scale
+}
+
+/// Встроенный шрифт `5x7`: только то, что нужно для подписей в игре.
+///
+/// Свой шрифт вместо движкового выбран осознанно: не надо тянуть
+/// `cl_enginefunc_t` ради одной строки текста, и разметка не зависит от
+/// настроек шрифтов у пользователя.
+pub mod font {
+    /// Ширина глифа в точках.
+    pub const WIDTH: usize = 5;
+    /// Высота глифа в точках.
+    pub const HEIGHT: usize = 7;
+    /// Шаг между глифами в точках (ширина + пробел).
+    pub const ADVANCE: f32 = 6.0;
+
+    /// Строки глифа: бит 0 — левая колонка, бит 4 — правая, бит 6 — нижняя строка.
+    pub fn glyph(c: char) -> [u8; HEIGHT] {
+        match c.to_ascii_uppercase() {
+            'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+            'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+            'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+            'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+            'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+            'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+            'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
+            'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+            'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+            'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+            'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+            'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+            'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+            'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+            'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+            'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+            'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+            'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+            'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+            'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+            'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+            'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+            'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+            'X' => [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001],
+            'Y' => [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+            'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+            '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+            '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+            '2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
+            '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+            '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+            '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+            '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+            '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+            '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+            '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+            '_' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111],
+            '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+            '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110],
+            '/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+            ':' => [0b00000, 0b00110, 0b00110, 0b00000, 0b00110, 0b00110, 0b00000],
+            _ => [0b00000; HEIGHT],
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn known_glyphs_have_pixels() {
+            for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:".chars() {
+                let rows = glyph(ch);
+                assert!(rows.iter().any(|r| *r != 0), "пустой глиф для {ch:?}");
+                assert!(rows.iter().all(|r| *r < 32), "глиф {ch:?} шире 5 точек");
+            }
+            assert_eq!(glyph(' '), [0; HEIGHT]);
+            assert_eq!(glyph('a'), glyph('A'), "строчные приводятся к заглавным");
         }
     }
 }

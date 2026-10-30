@@ -1,15 +1,18 @@
-//! Подмена интерфейса студийного рендера и рисование скелета.
+﻿//! Подмена интерфейса студийного рендера и рисование скелета.
+//!
+//! Вся работа с движком — через [`golden_sdk`], удобный слой — [`golden_std`]:
+//! здесь только хук и то, что должно быть на экране.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use golden_sdk::draw::{Color, Gl};
-use golden_sdk::engine::EngineStudioApi;
 use golden_sdk::hook::SwappedInterface;
-use golden_sdk::player::{PlayerExtra, Team};
+use golden_sdk::math::Vec3;
+use golden_sdk::player::Team;
 use golden_sdk::renderer::{self, StudioInterface, StudioRenderer, interface_slot};
+use golden_std::{Color, Overlay, Player, PoseCache};
 
 /// Оригинальный интерфейс, который был до подмены.
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -22,45 +25,84 @@ static SWAP: AtomicUsize = AtomicUsize::new(0);
 
 /// Сколько скелетов нарисовано.
 static DRAWN: AtomicU64 = AtomicU64::new(0);
-/// Сколько моделей пропущено (не игрок / нет костей).
+/// Сколько моделей пропущено (не игрок).
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
 /// Сколько вызовов без разбираемой модели.
 static NO_MODEL: AtomicU64 = AtomicU64::new(0);
 /// Сколько моделей-игроков отброшено проверкой геометрии.
 static REJECTED: AtomicU64 = AtomicU64::new(0);
-/// Сколько скелетов потеряли команду (нет элемента `g_PlayerExtraInfo`).
+/// Сколько скелетов осталось без команды (кастомные модели).
 static NO_TEAM: AtomicU64 = AtomicU64::new(0);
-/// Сущность → индекс игрока. Индекс ищется один раз на сущность.
-static ENTITY_INDEX: Mutex<Option<std::collections::BTreeMap<usize, i32>>> = Mutex::new(None);
-/// Команда, которую удалось определить в последний раз (для отчёта).
-static LAST_TEAM: Mutex<Option<&'static str>> = Mutex::new(None);
-/// Писали ли уже снимок состояния.
-static DUMPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Костей в последней модели.
-static BONES: AtomicI32 = AtomicI32::new(0);
 /// Сколько вызовов пришло через `DrawModel`.
 static CALLS_MODEL: AtomicU32 = AtomicU32::new(0);
 /// Сколько вызовов пришло через `DrawPlayer`.
 static CALLS_PLAYER: AtomicU32 = AtomicU32::new(0);
-/// Имя последней рассмотренной модели.
+/// Перехват `StudioSetupBones` (держим, чтобы трамплин не убрали).
+static BONES_DETOUR: Mutex<Option<golden_sdk::hook::Detour>> = Mutex::new(None);
+/// Перехват `StudioRenderModel`.
+static RENDER_MODEL_DETOUR: Mutex<Option<golden_sdk::hook::Detour>> = Mutex::new(None);
+/// Оригинал `StudioRenderModel`.
+static RENDER_MODEL_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+/// Сколько раз нарисовали контуры (для отчёта).
+static OUTLINED: AtomicU32 = AtomicU32::new(0);
+/// Счётчик попыток рисовать контуры.
+static OUTLINES: AtomicU32 = AtomicU32::new(0);
+/// Оригинал `StudioSetupBones`.
+static SETUP_BONES_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+/// Позы игроков, снятые в перехвате `StudioSetupBones`.
+static POSES: PoseCache = PoseCache::new();
+/// Модель оружия в руках по номеру игрока (заполняется в `StudioDrawPlayer`).
+static WEAPONS: [AtomicI32; 64] = [const { AtomicI32::new(0) }; 64];
+/// Последняя нарисованная сущность и время — чтобы не рисовать её дважды за кадр.
+static LAST_DRAWN: Mutex<Option<(usize, Instant)>> = Mutex::new(None);
+/// Имя последней рассмотренной модели (для отчёта).
 static LAST_MODEL: Mutex<Option<String>> = Mutex::new(None);
-/// Модели, про которые уже писали строку в лог.
-static SEEN: Mutex<std::collections::BTreeSet<String>> = Mutex::new(std::collections::BTreeSet::new());
 /// Когда последний раз отчитывались.
 static LAST_REPORT: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Цвет, если команду определить не удалось (кастомный сервер без `TeamInfo`).
 const UNKNOWN_COLOR: Color = Color::WHITE;
-/// Толщина линий в пикселях.
+/// Толщина линий контуров в пикселях.
+const OUTLINE_WIDTH: f32 = 2.0;
+/// Толщина линий скелета в пикселях.
 const LINE_WIDTH: f32 = 1.6;
-/// Показывать скелет сквозь модель (и стены).
-///
-/// `false` — линии честно прячутся за телом и стенами, видно только торчащие
-/// снаружи части. `true` — скелет виден всегда (по умолчанию: иначе на боте
-/// видно одни кончики).
-const XRAY: bool = true;
 
-/// Ставит подмену интерфейса (ждёт, пока клиент отдаст свой рендерер).
+/// Ставит перехват `StudioRenderModel` (слот 8 vtable рендерера).
+///
+/// Берём адрес из живой vtable: у объекта стоит vtable производного класса.
+fn install_render_model() {
+    let Some(renderer) = StudioRenderer::global() else {
+        return;
+    };
+    let Some(entry) = renderer.method(golden_sdk::renderer::SLOT_RENDER_MODEL) else {
+        golden_sdk::log!("в vtable рендерера нет слота отрисовки меша");
+        return;
+    };
+    // SAFETY: `entry` — `void StudioRenderModel(void)` этого объекта; подменяем
+    // на функцию с той же сигнатурой.
+    let detour = match unsafe {
+        golden_sdk::hook::Detour::new(entry, hook_render_model as *const ())
+    } {
+        Ok(detour) => detour,
+        Err(error) => {
+            golden_sdk::log!("не удалось перехватить StudioRenderModel: {error}");
+            return;
+        }
+    };
+    if let Ok(mut slot) = RENDER_MODEL_DETOUR.lock() {
+        if slot.is_none() {
+            if let Err(error) = detour.enable() {
+                golden_sdk::log!("не удалось включить перехват рендера модели: {error}");
+                return;
+            }
+            RENDER_MODEL_ORIGINAL.store(detour.trampoline() as usize, Ordering::Release);
+            golden_sdk::log!("перехват StudioRenderModel включён ({entry:#x})");
+            *slot = Some(detour);
+        }
+    }
+}
+
+/// Устанавливает подмену интерфейса (ждёт, пока клиент отдаст свой рендерер).
 pub fn install() -> Result<(), String> {
     let prev = wait_for_interface(Duration::from_secs(120))
         .ok_or_else(|| "движок так и не отдал интерфейс рендерера".to_string())?;
@@ -72,6 +114,53 @@ pub fn install() -> Result<(), String> {
     let swap = Box::leak(Box::new(swap));
     SWAP.store(swap as *mut SwappedInterface as usize, Ordering::Release);
     Ok(())
+}
+
+/// Перехват `CStudioModelRenderer::StudioSetupBones` (`client.dll+0x0ACB20`).
+///
+/// Кости для отрисовки нужны те, что посчитаны **внутри** рендера этого
+/// игрока: после возврата из `StudioDrawPlayer` движок их уже не хранит.
+/// Здесь ловим момент, когда они гарантированно свежие.
+fn install_setup_bones() {
+    let Some(base) = golden_sdk::process::client_base() else {
+        return;
+    };
+    // Точка входа берётся из живой vtable объекта рендерера: у объекта стоит
+    // vtable производного класса, и её слот может отличаться от базовой.
+    let Some(renderer) = StudioRenderer::global() else {
+        return;
+    };
+    let vtable = renderer.vtable();
+    if vtable == 0 {
+        return;
+    }
+    // SAFETY: vtable проверен на читаемость в `StudioRenderer`.
+    let entry = unsafe { golden_sdk::process::read::<usize>(vtable + 0x1C) };
+    golden_sdk::log!("vtable рендерера {vtable:#x}, слот 7 = {entry:#x}");
+    let target = if entry != 0 { entry } else { base + 0x0ACB20 };
+    golden_sdk::log!("перехват StudioSetupBones: {target:#x}");
+    // SAFETY: адрес — начало `StudioSetupBones` в клиенте этой сборки (см.
+    // `docs/STUDIO_REVERSE.md`), сигнатура `int(int)` thiscall.
+    let detour = match unsafe {
+        golden_sdk::hook::Detour::new(target, hook_setup_bones as *const ())
+    } {
+        Ok(detour) => detour,
+        Err(error) => {
+            golden_sdk::log!("не удалось перехватить StudioSetupBones: {error}");
+            return;
+        }
+    };
+    if let Ok(mut slot) = BONES_DETOUR.lock() {
+        if slot.is_none() {
+            if let Err(error) = detour.enable() {
+                golden_sdk::log!("не удалось включить перехват костей: {error}");
+                return;
+            }
+            SETUP_BONES_ORIGINAL.store(detour.trampoline() as usize, Ordering::Release);
+            golden_sdk::log!("перехват костей включён");
+            *slot = Some(detour);
+        }
+    }
 }
 
 /// Возвращает подмену, если клиент её сбросил. `true` — пришлось вернуть.
@@ -86,7 +175,6 @@ pub fn watchdog() -> bool {
 
 /// Строка отчёта, если с прошлого раза что-то изменилось.
 pub fn take_report() -> Option<String> {
-    let drawn = DRAWN.load(Ordering::Relaxed);
     let calls = CALLS_MODEL.load(Ordering::Relaxed) + CALLS_PLAYER.load(Ordering::Relaxed);
     if calls == 0 {
         return None;
@@ -99,17 +187,16 @@ pub fn take_report() -> Option<String> {
         *last = Some(Instant::now());
     }
     let model = LAST_MODEL.lock().ok()?.clone().unwrap_or_default();
-    let team = LAST_TEAM.lock().ok()?.unwrap_or("?");
     Some(format!(
-        "вызовов: {} (DrawModel {} / DrawPlayer {}), скелетов нарисовано: {drawn} [команда: {team}], пропущено: {}, без модели: {}, без костей/отброшено: {}, без команды: {}, костей: {}, модель: {model}",
+        "скелетов: {}, вызовов: {} (DrawModel {} / DrawPlayer {}), не игрок: {}, без модели: {}, без костей: {}, без команды: {}, модель: {model}",
+        DRAWN.load(Ordering::Relaxed),
         calls,
         CALLS_MODEL.load(Ordering::Relaxed),
         CALLS_PLAYER.load(Ordering::Relaxed),
         SKIPPED.load(Ordering::Relaxed),
         NO_MODEL.load(Ordering::Relaxed),
         REJECTED.load(Ordering::Relaxed),
-        NO_TEAM.load(Ordering::Relaxed),
-        BONES.load(Ordering::Relaxed)
+        NO_TEAM.load(Ordering::Relaxed)
     ))
 }
 
@@ -159,7 +246,11 @@ fn our_interface(prev: *const StudioInterface) -> *mut StudioInterface {
     leaked as *mut StudioInterface
 }
 
-/// Наш `StudioDrawModel`: оригинал, затем скелет.
+/// Наш `StudioDrawModel`: только считает вызовы.
+///
+/// Игроков движок рисует через `StudioDrawPlayer`; рисовать отсюда нельзя —
+/// на движении и склонах один игрок попадает сюда повторно (тень, второй
+/// проход), и на экране смешивались бы два скелета.
 ///
 /// # Safety
 /// Вызывается движком из рендер-потока с активным GL-контекстом.
@@ -171,11 +262,78 @@ unsafe extern "C" fn hook_draw_model(flags: i32) -> i32 {
     // SAFETY: `prev` — интерфейс, который был до подмены, и он жив.
     let result = unsafe { (*prev).call_draw_model(flags) };
     CALLS_MODEL.fetch_add(1, Ordering::Relaxed);
-    draw_skeleton(false);
     result
 }
 
-/// Наш `StudioDrawPlayer`: если движок зовёт игроков этим путём — рисуем так же.
+/// Наш `StudioRenderModel`: тело рисуется как обычно, затем та же геометрия
+/// перерисовывается линиями в цвете команды.
+///
+/// Перехват нужен именно здесь, а не в `StudioDrawPlayer`: после возврата из
+/// `StudioDrawPlayer` движок восстанавливает матрицы, и нарисованное «снаружи»
+/// уходит за пределы экрана.
+///
+/// # Safety
+/// Вызывается движком (thiscall) из рендер-потока с активным GL-контекстом.
+unsafe extern "thiscall" fn hook_render_model(this: *mut c_void) {
+    let orig = RENDER_MODEL_ORIGINAL.load(Ordering::Acquire);
+    if orig == 0 {
+        return;
+    }
+    // SAFETY: сохранённый адрес оригинала `void StudioRenderModel(void)`.
+    let f: unsafe extern "thiscall" fn(*mut c_void) = unsafe { core::mem::transmute(orig) };
+    unsafe { f(this) };
+
+    let Some(renderer) = StudioRenderer::global() else {
+        return;
+    };
+    let model = renderer.studio_model();
+    if OUTLINES.fetch_add(1, Ordering::Relaxed) < 5 {
+        golden_sdk::log!(
+            "контур: модель {:?} сущность {:?} слот {:#x}",
+            model.as_ref().map(|model| model.name()),
+            renderer.current_entity().map(|entity| entity.addr()),
+            this as usize
+        );
+    }
+    let Some(model) = model else {
+        return;
+    };
+    if !model.is_player_model() {
+        return;
+    }
+    let Some(color) = entity_color(&renderer) else {
+        if OUTLINES.load(Ordering::Relaxed) < 10 {
+            golden_sdk::log!("контур: цвет команды не определён");
+        }
+        return;
+    };
+    let Some(gl) = (unsafe { golden_sdk::draw::Gl::get() }) else {
+        return;
+    };
+    // SAFETY: тот же объект и тот же контекст, что и у оригинала.
+    unsafe {
+        gl.wireframe(color, OUTLINE_WIDTH, || {
+            f(this);
+        });
+    }
+    OUTLINED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Цвет команды для сущности, которую сейчас рисует движок.
+fn entity_color(renderer: &StudioRenderer) -> Option<Color> {
+    let entity = renderer.current_entity();
+    let model = renderer.studio_model()?;
+    let index = entity
+        .map(|entity| entity.player_index())
+        .filter(|index| (0..=63).contains(index));
+    let player = index.and_then(|index| entity.and_then(|raw| Player::from_raw(index, raw)));
+    player
+        .and_then(|player| player.team())
+        .or_else(|| Team::from_model_name(model.name()))
+        .map(|team| team.color())
+}
+
+/// Наш `StudioDrawPlayer`: оригинал, затем скелет.
 ///
 /// # Safety
 /// Вызывается движком из рендер-потока с активным GL-контекстом.
@@ -189,15 +347,78 @@ unsafe extern "C" fn hook_draw_player(flags: i32, player_info: *mut c_void) -> i
         unsafe { f(flags, player_info) }
     };
     CALLS_PLAYER.fetch_add(1, Ordering::Relaxed);
-    draw_skeleton(true);
+    // Перехват костей ставим отсюда: `StudioDrawPlayer` вызывается заведомо,
+    // и к этому моменту объект рендерера уже сконструирован.
+    if BONES_DETOUR.lock().is_ok_and(|slot| slot.is_none()) {
+        install_setup_bones();
+    }
+    if RENDER_MODEL_DETOUR
+        .lock()
+        .is_ok_and(|slot| slot.is_none())
+    {
+        install_render_model();
+    }
+    // Оружие и номер игрока запоминаем по номеру: отрисовка скелета — ниже, по
+    // снимку костей, снятому в `StudioSetupBones`.
+    let index = golden_sdk::engine::player_of_draw(player_info);
+    let weapon = golden_sdk::engine::player_weapon_model(player_info);
+    if let (Some(index), Some(weapon)) = (index, weapon) {
+        if (0..64).contains(&index) {
+            WEAPONS[index as usize].store(weapon, Ordering::Release);
+        }
+    }
+    draw_skeleton(Some(DrawInfo {
+        index,
+        weapon: weapon.or_else(|| {
+            index
+                .map(|index| WEAPONS[index as usize].load(Ordering::Acquire))
+                .filter(|weapon| *weapon > 0)
+        }),
+    }));
     result
+}
+
+/// Наш `StudioSetupBones`: после оригинала кости этого игрока уже посчитаны.
+///
+/// # Safety
+/// Вызывается движком (thiscall) из рендер-потока.
+unsafe extern "thiscall" fn hook_setup_bones(this: *mut c_void, flags: i32) -> i32 {
+    let prev = SETUP_BONES_ORIGINAL.load(Ordering::Acquire);
+    let result = if prev == 0 {
+        0
+    } else {
+        // SAFETY: сохранённый адрес оригинала той же сигнатуры.
+        let f: unsafe extern "thiscall" fn(*mut c_void, i32) -> i32 =
+            unsafe { core::mem::transmute(prev) };
+        unsafe { f(this, flags) }
+    };
+    // Снимок костей: внутри `StudioSetupBones` они посчитаны именно для этой
+    // сущности. Рисовать здесь нельзя — тело рисуется после нас и закрывает
+    // линии, поэтому позу складываем в кэш, а рисуем в `StudioDrawPlayer`.
+    if let Some(renderer) = StudioRenderer::global() {
+        if let (Some(entity), Some(model)) = (renderer.current_entity(), renderer.studio_model()) {
+            if model.is_player_model() {
+                POSES.capture(entity.addr(), &renderer, &model);
+            }
+        }
+    }
+    result
+}
+
+/// Что движок сообщил о рисуемом игроке в `StudioDrawPlayer`.
+#[derive(Debug, Clone, Copy)]
+struct DrawInfo {
+    /// Номер игрока (`player_info + 0x04`).
+    index: Option<i32>,
+    /// Номер модели оружия в руках (`player_info + 0xB4`).
+    weapon: Option<i32>,
 }
 
 /// Рисует скелет модели, которую клиент только что нарисовал.
 ///
-/// `via_player` — пришли ли мы сюда через `StudioDrawPlayer` (тогда это точно
-/// сущность игрока, так решил сам движок).
-fn draw_skeleton(via_player: bool) {
+/// `draw` — данные от `StudioDrawPlayer`; `None`, если пришли из
+/// `StudioDrawModel`, где движок ничего о игроке не сообщает.
+fn draw_skeleton(draw: Option<DrawInfo>) {
     let Some(renderer) = StudioRenderer::global() else {
         return;
     };
@@ -205,53 +426,78 @@ fn draw_skeleton(via_player: bool) {
         return;
     }
 
-    // Один раз за процесс пишем полный снимок: по нему видно, какое поле не то.
-    if !DUMPED.swap(true, Ordering::Relaxed) {
-        let snap = renderer.snapshot();
-        golden_sdk::log!("снимок рендерера: {snap:#x?}");
-    }
+    // Перехват `StudioSetupBones` ставится из `StudioDrawPlayer` (см. ниже).
 
-    // Заголовок берём из `model_t` сущности: поле рендерера `+0x4C` клиент может
-    // чистить сразу после отрисовки, а `model_t` живёт, пока живёт модель.
-    let model = match renderer.entity_model().or_else(|| renderer.studio_model()) {
-        Some(model) => model,
-        None => {
-            NO_MODEL.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
+    let Some(model) = renderer
+        .studio_model()
+        .or_else(|| renderer.entity_model())
+    else {
+        NO_MODEL.fetch_add(1, Ordering::Relaxed);
+        return;
     };
 
-    // Про каждую новую модель — одна строка со всеми кандидатами на «игрок».
-    // Нужно, чтобы выбрать признак по факту, а не по догадке.
-    if !SEEN.lock().map(|s| s.contains(model.name())).unwrap_or(false) {
-        if let Ok(mut seen) = SEEN.lock() {
-            if seen.insert(model.name().to_string()) {
-                golden_sdk::log!(
-                    "модель {}: костей {}, кость1..3={:?}, путь={}",
-                    model.name(),
-                    model.bones().len(),
-                    model.bones().iter().take(3).map(|b| b.name()).collect::<Vec<_>>(),
-                    if via_player { "draw_player" } else { "draw_model" }
-                );
-            }
-        }
-    }
+    let entity = renderer.current_entity();
 
-    if !via_player && !model.is_player_model() {
+    if !model.is_player_model() {
         SKIPPED.fetch_add(1, Ordering::Relaxed);
         return;
     }
 
-    // Проверка геометрии: отбрасывает матрицы, посчитанные для другой модели, и
-    // скелеты в системе координат вьюмодели (из-за них были линии к своему оружию).
-    let segments = renderer.skeleton_lines_checked(&model);
-    if segments.is_empty() {
-        REJECTED.fetch_add(1, Ordering::Relaxed);
-        return;
+    // Проверка геометрии отбрасывает матрицы, посчитанные для другой модели,
+    // и скелеты в системе координат вьюмодели.
+    //
+    // Позиции берём из снимка, снятого в `StudioSetupBones`: только там они
+    // принадлежат этому игроку.
+    let pose = entity.and_then(|entity| POSES.get(entity.addr(), &model));
+    if POSES.len() < 1 && REJECTED.load(Ordering::Relaxed) < 5 {
+        let captured = POSES.capture(
+            entity.map(|entity| entity.addr()).unwrap_or(0),
+            &renderer,
+            &model,
+        );
+        golden_sdk::log!(
+            "поза: entity {:?} модель {} захват {} в кэше {}",
+            entity.map(|entity| entity.addr()),
+            model.name(),
+            captured,
+            POSES.len()
+        );
     }
 
-    // Команда — из `g_PlayerExtraInfo` (работает и на кастомных моделях).
-    let team = team_of(&renderer, &model);
+    // Одна сущность за кадр: движок иногда рисует модель игрока дважды подряд.
+    if let Some(entity) = entity {
+        if let Ok(mut last) = LAST_DRAWN.lock() {
+            if let Some((addr, at)) = *last {
+                if addr == entity.addr() && at.elapsed() < Duration::from_millis(2) {
+                    return;
+                }
+            }
+            *last = Some((entity.addr(), Instant::now()));
+        }
+    }
+
+    if let Ok(mut last) = LAST_MODEL.lock() {
+        *last = Some(model.name().to_string());
+    }
+
+    // Номер игрока: из `StudioDrawPlayer`, а если пришли из `StudioDrawModel` —
+    // из самой сущности (`+0x04`). Без верного номера подпись и цвет берутся
+    // у чужого игрока, поэтому без номера скелет не рисуем.
+    let index = draw
+        .and_then(|draw| draw.index)
+        .or_else(|| entity.map(|entity| entity.player_index()))
+        .filter(|index| (0..=63).contains(index));
+    let Some(index) = index else {
+        NO_TEAM.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    let weapon = draw.and_then(|draw| draw.weapon);
+    let player = entity
+        .and_then(|raw| Player::from_raw(index, raw))
+        .map(|player| player.with_weapon_model(weapon));
+    let team = player
+        .and_then(|player| player.team())
+        .or_else(|| Team::from_model_name(model.name()));
     let color = match team {
         Some(team) => team.color(),
         None => {
@@ -260,60 +506,83 @@ fn draw_skeleton(via_player: bool) {
         }
     };
 
-    BONES.store(model.bones().len() as i32, Ordering::Relaxed);
-    if let Ok(mut last) = LAST_MODEL.lock() {
-        *last = Some(model.name().to_string());
-    }
-    if let Ok(mut last) = LAST_TEAM.lock() {
-        *last = Some(team.map(Team::short_name).unwrap_or("?"));
-    }
-
-    // SAFETY: хук отрисовки модели — рендер-поток игры, GL-контекст активен,
-    // мировая система координат текущая.
-    unsafe {
-        if let Some(gl) = Gl::get() {
-            if XRAY {
-                gl.lines_xray(color, LINE_WIDTH, &segments);
-            } else {
-                gl.lines(color, LINE_WIDTH, &segments);
-            }
-            DRAWN.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
-/// Команда сущности, которую сейчас рисуем.
-///
-/// Основной путь — `g_PlayerExtraInfo[индекс].teamnumber`: массив заполняет
-/// обработчик `TeamInfo`, поэтому он верен и для ботов, и для кастомных моделей.
-/// Если индекс ещё не найден (первый кадр) — по имени модели как запасной вариант.
-fn team_of(renderer: &StudioRenderer, model: &golden_sdk::StudioModel) -> Option<Team> {
-    if let Some(extra) = player_extra(renderer) {
-        if extra.team().is_some() {
-            return extra.team();
-        }
-    }
-    Team::from_model_name(model.name())
-}
-
-/// `g_PlayerExtraInfo` для текущей сущности (индекс ищется один раз на сущность).
-fn player_extra(renderer: &StudioRenderer) -> Option<PlayerExtra> {
-    let entity = renderer.current_entity()?;
-    let addr = entity.addr();
-    let index = {
-        let mut map = ENTITY_INDEX.lock().ok()?;
-        let map = map.get_or_insert_with(std::collections::BTreeMap::new);
-        match map.get(&addr) {
-            Some(&index) => index,
-            None => {
-                // `GetEntityByIndex` — официальный путь движка; сравнение адресов
-                // не зависит от того, где в структуре лежит поле `index`.
-                let index = EngineStudioApi::for_engine()?.entity_index(entity)?;
-                golden_sdk::log!("сущность {addr:#x} — индекс {index}");
-                map.insert(addr, index);
-                index
-            }
-        }
+    let Some(overlay) = Overlay::new() else {
+        return;
     };
-    PlayerExtra::for_index(index)
+
+    // Контуры рисуются в перехвате `StudioRenderModel` (см. `hook_render_model`):
+    // только там движок держит нужные GL-матрицы.
+
+    // Скелет — только по свежему снимку позы: осевшие в памяти кости
+    // принадлежат другому игроку, рисовать по ним нельзя.
+    let mut segments = Vec::new();
+    if let Some(pose) = &pose {
+        if pose.origins.len() == model.bones().len() {
+            segments = pose.segments(&model);
+            overlay.skeleton_lines(&segments, color, LINE_WIDTH);
+        }
+    }
+    if segments.is_empty() {
+        REJECTED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    if let Some((point, radius)) = pose.as_ref().and_then(|pose| pose.head) {
+        overlay.circle_at(point, radius, color, LINE_WIDTH);
+    }
+
+    // Подписи: имя над головой, оружие (и бомба/кит) — под ногами.
+    let extremes = pose
+        .as_ref()
+        .and_then(|pose| pose.extremes())
+        .or_else(|| extremes(&segments))
+        .or_else(|| {
+            // Без снимка позы — по габаритам модели от позиции сущности.
+            let (min, max) = model.hull()?;
+            let origin = entity.map(|entity| entity.origin())?;
+            Some((origin + min, origin + max))
+        });
+    if let Some((lowest, highest)) = extremes {
+        let name = player.map(|player| player.name()).unwrap_or_default();
+        if !name.is_empty() {
+            overlay.label(highest, &name, color, true);
+        }
+        if let Some(text) = under_text(player) {
+            overlay.label(lowest, &text, color, false);
+        }
+    }
+
+    DRAWN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Самая низкая и самая высокая точки скелета — к ним привязываются подписи.
+fn extremes(segments: &[(Vec3, Vec3)]) -> Option<(Vec3, Vec3)> {
+    let mut lowest: Option<Vec3> = None;
+    let mut highest: Option<Vec3> = None;
+    for (a, b) in segments {
+        for point in [a, b] {
+            if lowest.is_none_or(|q| point.z < q.z) {
+                lowest = Some(*point);
+            }
+            if highest.is_none_or(|q| point.z > q.z) {
+                highest = Some(*point);
+            }
+        }
+    }
+    Some((lowest?, highest?))
+}
+
+/// Подпись под скелетом: оружие, бомба, дефуз-кит.
+fn under_text(player: Option<golden_std::Player>) -> Option<String> {
+    let player = player?;
+    let mut parts = Vec::new();
+    if let Some(weapon) = player.weapon() {
+        parts.push(weapon);
+    }
+    if player.has_bomb() {
+        parts.push("C4".to_string());
+    }
+    if player.has_defuser() {
+        parts.push("Kit".to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }

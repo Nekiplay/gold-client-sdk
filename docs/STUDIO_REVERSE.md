@@ -512,8 +512,89 @@ HookSetupModel.initialize(
 | `crates/golden-sdk/src/renderer.rs` | объект рендерера, матрицы костей, подмена интерфейса |
 | `crates/golden-sdk/src/draw.rs` | OpenGL: линии, цвет, сохранение состояния |
 | `crates/golden-sdk/src/hook.rs` | `retour::RawDetour` и `SwappedInterface` |
-| `examples/skeleton` | сам оверлей: хук `draw_model` + рисование |
+| `crates/golden-sdk/src/player.rs` | `g_PlayerExtraInfo`: ник, команда, счёт, флаги |
+| `crates/golden-std` | удобный слой: `Game`, `Player`, `Overlay` |
+| `examples/skeleton` | сам оверлей: хук отрисовки + рисование |
 | `examples/diagnostics` | проверка оффсетов в живой игре |
+
+---
+
+## 12. Живые смещения: игрок, оружие, команда
+
+Эти адреса найдены не «на глаз», а по двум функциям `client.dll`, которые клиент
+сам использует для таблицы счёта и для `StudioDrawPlayer`:
+
+| Что | Где | Как найдено |
+| --- | --- | --- |
+| `g_PlayerExtraInfo` | `client.dll + 0x224E40` | база массива в `FUN_100BEC00` (сборка строк таблицы счёта: ключи `"name"`, `"frags"`, `"deaths"`, `"money"`, `"health"`, `"team"`) |
+| шаг записи | `0xC0` | индексация `base + index * 0xC0` |
+| чтение записи | `FUN_100BA530` | копирует поля записи в выходную структуру |
+
+Поля записи `player_extra_info` (проверено в игре: значения совпадают с таблицей счёта):
+
+| off | поле | off | поле |
+|---|---|---|---|
+| `0x00` | `char *name` (указатель на строку) | `0x30` | ✔ `has_c4` |
+| `0x28` | ✔ `frags` | `0x31` | ✔ `vip` |
+| `0x2C` | ✔ `deaths` | `0x32` | ✔ `dead` |
+| `0x7C` | ✔ `teamnumber` (1 = T, 2 = CT) | `0x33` | ✔ `has_defusekit` |
+| `0xB8` | ✔ `health` | `0xBC` | ✔ `money` |
+
+Смещения в рендер-сущности (`cl_entity_t`, которую движок передаёт в
+`StudioDrawPlayer`; проверено дампом и совпадением с моделью на экране):
+
+| off | поле | примечание |
+|---|---|---|
+| `0x04` | `player` | признак «это игрок», всегда `1` — **не** номер: его легко принять за индекс |
+| `0x10` | `origin` | позиция в мире |
+| `0x184` | `model_t.model` → `studiohdr_t *` | заголовок только для чтения; `Mod_Extradata` здесь звать нельзя — при ошибке он делает `Host_Error` и убивает игру |
+| `0x2E4` | `player_colors` | упакованные цвета модели |
+| `0x368` | `weapon_model` | номер модели оружия в руках (индекс в массиве `model_t`) |
+
+Номер игрока, которого движок рисует прямо сейчас, приходит в
+`StudioDrawPlayer(int, player_info_s *)`: это `entity_state_t::number` — **второе**
+поле структуры, `player_info + 0x04`. Он верен и для кастомных моделей, поэтому
+именно он используется как ключ к `g_PlayerExtraInfo`, а не поиск по позиции.
+
+Консольные команды: `Cbuf_AddText` = `hw.dll + 0x031E80` (найдено по строке
+«Cbuf_AddText: buffer overflow»); команда уходит в буфер движка и выполняется
+на ближайшем кадре, как из консоли. В SDK — `golden_sdk::engine::run_command`.
+
+---
+
+## 13. `golden-std`: удобный слой
+
+`golden-sdk` намеренно низкоуровневый: смещения, чтение памяти, GL. Для кода
+поверх него есть `crates/golden-std` — те же данные, но без `unsafe` и смещений:
+
+```rust
+use golden_std::Game;
+
+let Some(game) = Game::get() else { return };
+for name in game.get_players().map(|player| player.name()) {
+    println!("{name}");
+}
+if let Some(local) = game.get_local_player() {
+    println!("{} hp={}", local.name(), local.health());
+}
+```
+
+| API | Что даёт |
+| --- | --- |
+| `Game::get()` | хендл игры текущего процесса |
+| `game.get_players()` | итератор живых (нарисованных) игроков: ник, команда, HP, счёт, деньги, бомба, кит, оружие |
+| `game.get_entities()` | все сущности с моделью |
+| `game.get_local_player()` | локальный игрок (номер берётся из `GetTimes().view_entity`) |
+| `game.run_command("+jump")` | консольная команда через `Cbuf_AddText` |
+| `Overlay::new()` | камера кадра + FOV + вьюпорт |
+| `overlay.skeleton(..)`, `overlay.head_circle(..)`, `overlay.label(..)` | отрисовка скелета, круга у головы и подписей |
+
+Отрисовка по-прежнему требует вызова из хука отрисовки: там активен GL-контекст
+и камера уже посчитана движком.
+
+---
+
+### Приложение: инструменты
 
 Проверено статически: адреса, размеры структур, порядок вызовов. Проверка «на глаз» — только
 инжектом в игру: SDK не может подтвердить, что `m_pbonetransform` действительно заполнен в
