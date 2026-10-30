@@ -96,7 +96,30 @@ impl Game {
     pub fn run_command(&self, command: &str) -> bool {
         golden_sdk::engine::run_command(command)
     }
+
+    /// Состояние движка текущего кадра: `game.state().ducking()`.
+    ///
+    /// Отдельный хендл не нужен — это снимок глобалов, а не объект с полями.
+    pub fn state(&self) -> State {
+        State
+    }
+
+    /// Клиент загрузил карту и мир идёт.
+    pub fn is_in_game(&self) -> bool {
+        State::in_game()
+    }
+
+    /// Текущий FOV с поправкой на аспект окна: `game.fov()`.
+    ///
+    /// Возвращает горизонтальный угол в градусах для фактического разрешения —
+    /// тот, что видит игрок, а не `90` из соглашения 4:3.
+    pub fn fov(&self) -> f32 {
+        golden_sdk::state::horizontal_fov(State::fov())
+    }
 }
+
+/// Состояние движка: `Game::state()`.
+pub use golden_sdk::state::EngineState as State;
 
 /// Камера кадра в мировых координатах.
 #[derive(Debug, Clone, Copy, PartialEq)]

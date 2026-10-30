@@ -13,6 +13,21 @@ use crate::process;
 use crate::renderer::{interface_slot, studio_interface, StudioRenderer, StudioInterface};
 use crate::studio::{IDST, VERSION};
 
+/// Читает три `float` подряд — `vec3_t`.
+///
+/// # Safety
+/// `address` должен указывать на три читаемых `f32`.
+unsafe fn read_vec3(address: usize) -> crate::math::Vec3 {
+    // SAFETY: контракт функции.
+    unsafe {
+        crate::math::Vec3::new(
+            process::read::<f32>(address),
+            process::read::<f32>(address + 4),
+            process::read::<f32>(address + 8),
+        )
+    }
+}
+
 /// Результат одной проверки.
 #[derive(Debug, Clone)]
 pub struct Check {
@@ -54,8 +69,93 @@ pub fn run() -> Vec<Check> {
     checks.extend(check_renderer(client_base));
     checks.extend(check_client_copy_matches(client_base));
     checks.extend(check_world(hw_base, client_base));
+    checks.extend(check_state(hw_base, client_base));
 
     checks
+}
+
+/// Состояние кадра из `ref_params_t` и cvar-переменные.
+///
+/// Если сдвинулись эти смещения, [`crate::state::EngineState`] начнёт врать
+/// молча — например, `on_ground` всегда `false`, а FOV `0`. Проверки ловят это
+/// по согласованности величин между собой, а не по ожидаемым константам.
+fn check_state(hw_base: usize, client_base: usize) -> Vec<Check> {
+    use crate::offsets::{client, ref_params};
+
+    let mut out = Vec::new();
+
+    // SAFETY: чтения из глобалов движка, все адреса внутри образа hw.dll.
+    let (view_origin, view_ofs, simorg) = unsafe {
+        (
+            read_vec3(hw_base + ref_params::VIEW_ORIGIN),
+            read_vec3(hw_base + ref_params::VIEW_OFS),
+            read_vec3(hw_base + ref_params::SIMORG),
+        )
+    };
+    let offset = view_origin - simorg;
+    out.push(Check::require(
+        (offset - view_ofs).length() < 0.6,
+        "ref_params: vieworg = simorg + view_ofs",
+        format!(
+            "разница ({:.2}, {:.2}, {:.2}), view_ofs ({:.2}, {:.2}, {:.2})",
+            offset.x, offset.y, offset.z, view_ofs.x, view_ofs.y, view_ofs.z
+        ),
+    ));
+
+    let (width, height) = crate::state::EngineState::screen_size();
+    out.push(Check::require(
+        width >= 320 && height >= 240,
+        "ref_params: размер окна",
+        format!("{width}x{height}"),
+    ));
+
+    let maxclients = crate::state::EngineState::max_clients();
+    out.push(Check::require(
+        (1..=64).contains(&maxclients),
+        "ref_params: maxclients",
+        format!("{maxclients}"),
+    ));
+
+    let view_entity = crate::state::EngineState::view_entity();
+    out.push(Check::require(
+        (0..=EngineStudioApi::MAX_EDICTS).contains(&view_entity),
+        "ref_params: viewentity",
+        format!("{view_entity}"),
+    ));
+
+    let water = crate::state::EngineState::water_level();
+    out.push(Check::require(
+        (0..=3).contains(&water),
+        "ref_params: waterlevel в 0..=3",
+        format!("{water}"),
+    ));
+
+    let fovs = unsafe {
+        [
+            process::read::<i32>(client_base + client::view::FOV_1),
+            process::read::<i32>(client_base + client::view::FOV_2),
+            process::read::<i32>(client_base + client::view::FOV_3),
+        ]
+    };
+    out.push(Check::require(
+        fovs.iter().all(|&fov| fov == fovs[0]) && (10..=180).contains(&fovs[0]),
+        "client: m_iFov",
+        format!("{:?}", fovs),
+    ));
+
+    for (name, offset) in [
+        ("m_yaw", client::cvars::M_YAW),
+        ("sensitivity", client::cvars::SENSITIVITY),
+    ] {
+        let cvar = crate::state::cvar_name(offset).unwrap_or_default();
+        out.push(Check::require(
+            cvar == name,
+            "client: cvar по адресу",
+            format!("{name} -> {cvar:?}"),
+        ));
+    }
+
+    out
 }
 
 /// Мир: текущая сущность рендерера и записи игроков.

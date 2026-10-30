@@ -108,11 +108,118 @@ pub mod hw {
     /// `void SV_StudioSetupBones(...)` — серверная копия расчёта костей: удобный
     /// эталон, когда нужно сверить математику.
     pub const SV_STUDIO_SETUP_BONES: usize = 0x92_C70;
+
+    // --- состояние мира ---
+
+    /// ✔ `int cl.in_game` — клиент загрузил карту и находится в игре (`1`).
+    pub const IN_GAME: usize = 0x27_4B18;
+
+    /// ✔ `int` — открыто меню (`1`), при этом мир продолжает идти.
+    pub const IN_MENU: usize = 0x333_A62C;
+
+    /// ✔ `int` — открыт чат (`1`): клавиши уходят в строку ввода.
+    pub const CHAT_OPENED: usize = 0x27_E2E00;
+
+    /// `ref_params_t` — см. [`super::ref_params`].
+    pub use super::ref_params;
 }
 
 // =====================================================================
 // client.dll — игровой клиент
 // =====================================================================
+
+/// `ref_params_t` — снимок кадра, который движок собирает перед отрисовкой.
+///
+/// В `hw.dll` лежит **копия** клиентской структуры: `FUN_100B4700` копирует
+/// `0x3A` двойных слов из `0x12F9C5A8` в [`BASE`] каждый кадр (виден цикл
+/// `*puVar5 = *puVar3` в декомпиляции). Отсюда движок берёт камеру, время и
+/// флаги состояния — значит значения всегда свежие и совпадают с тем, что
+/// видит рендер.
+///
+/// Раскладка сверена с живым процессом: `vieworg = simorg + view_ofs`
+/// (разница ровно `17.0` по `z`), `cl_viewangles` совпадают с `viewangles`,
+/// `health = 100`, `viewsize = 120`, `width/height = 1920/1080`.
+///
+/// ✔ — сверено живым замером, ← — позиция выведена из порядка полей.
+pub mod ref_params {
+    /// База структуры в `hw.dll`.
+    pub const BASE: usize = 0x43_E25C;
+
+    /// ✔ `vec3_t vieworg` — позиция камеры (origin + [`VIEW_OFS`]).
+    pub const VIEW_ORIGIN: usize = BASE + 0x00;
+
+    /// ✔ `vec3_t viewangles` — углы камеры с отдачей от стрельбы.
+    pub const VIEW_ANGLES: usize = BASE + 0x0C;
+
+    /// ✔ `vec3_t forward` — единичный вектор взгляда.
+    pub const FORWARD: usize = BASE + 0x18;
+
+    /// ✔ `vec3_t right` — единичный вектор вправо.
+    pub const RIGHT: usize = BASE + 0x24;
+
+    /// ✔ `vec3_t up` — единичный вектор вверх.
+    pub const UP: usize = BASE + 0x30;
+
+    /// ✔ `float frametime` — длительность кадра в секундах (`0.0243`).
+    pub const FRAMETIME: usize = BASE + 0x3C;
+
+    /// ✔ `float time` — игровое время в секундах.
+    pub const TIME: usize = BASE + 0x40;
+
+    /// ← `int intermission` — идёт смена карты.
+    pub const INTERMISSION: usize = BASE + 0x44;
+
+    /// ← `int paused`.
+    pub const PAUSED: usize = BASE + 0x48;
+
+    /// ← `int spectator` — камера наблюдателя.
+    pub const SPECTATOR: usize = BASE + 0x4C;
+
+    /// ✔ `int onground` — стоит на земле (`1`), в прыжке/на лестнице (`0`).
+    pub const ON_GROUND: usize = BASE + 0x50;
+
+    /// ✔ `int waterlevel` — `0` сухо, `1` по щиколотку, `2` в воде, `3` под водой.
+    pub const WATER_LEVEL: usize = BASE + 0x54;
+
+    /// ✔ `vec3_t simvel` — скорость игрока в юнитах/с.
+    pub const SIMVEL: usize = BASE + 0x58;
+
+    /// ✔ `vec3_t simorg` — позиция игрока (совпадает с origin сущности).
+    pub const SIMORG: usize = BASE + 0x64;
+
+    /// ✔ `vec3_t view_ofs` — смещение глаз от позиции игрока (`z = 17` стоя).
+    ///
+    /// В приседе `z` падает до `12`, поэтому это единственный признак приседа,
+    /// который движок публикует без обращения к серверному состоянию.
+    pub const VIEW_OFS: usize = BASE + 0x70;
+
+    /// ✔ `vec3_t cl_viewangles` — углы ввода без отдачи.
+    pub const CL_VIEWANGLES: usize = BASE + 0x80;
+
+    /// ✔ `int health` — здоровье; `-1`, если движок не знает.
+    pub const HEALTH: usize = BASE + 0x8C;
+
+    /// ← `vec3_t crosshairangle`.
+    pub const CROSSHAIRANGLE: usize = BASE + 0x90;
+
+    /// ✔ `float viewsize` — `cl_viewsize`, по умолчанию `120`.
+    pub const VIEWSIZE: usize = BASE + 0x9C;
+
+    /// ← `vec3_t punchangle` — отдача, которую движок добавил к камере.
+    pub const PUNCHANGLE: usize = BASE + 0xA0;
+
+    /// ✔ `int maxclients` — `32` на обычном сервере.
+    pub const MAXCLIENTS: usize = BASE + 0xAC;
+
+    /// ✔ `int viewentity` — номер сущности, за которой смотрит игрок.
+    pub const VIEWENTITY: usize = BASE + 0xB0;
+
+    /// ✔ `int width` — ширина окна в пикселях.
+    pub const SCREEN_WIDTH: usize = BASE + 0xD8;
+
+    /// ✔ `int height` — высота окна в пикселях.
+    pub const SCREEN_HEIGHT: usize = BASE + 0xDC;
+}
 
 /// `client.dll`: интерфейс рендера, данные игроков, vtable рендерера.
 pub mod client {
@@ -201,6 +308,47 @@ pub mod client {
 
     /// Обработчик сообщения `TeamInfo` — пишет `g_PlayerExtraInfo`.
     pub const MSG_TEAM_INFO: usize = 0x0B_9BE0;
+
+    // --- консольные переменные ---
+
+    /// `cvar_t` в этой сборке: `+0x00` — `char *name`, `+0x04` — `char *string`,
+    /// `+0x08` — `int flags`, `+0x0C` — `float value`, `+0x10` — `float` зеркало
+    /// значения, `+0x14` — `char *def`. Глобалы ниже — **указатели** на `cvar_t`,
+    /// поэтому сначала читается указатель, потом `+0x0C`.
+    pub mod cvars {
+        /// ✔ `sensitivity` (`2.5` у этой установки).
+        pub const SENSITIVITY: usize = 0x1B_1174;
+
+        /// ✔ `m_yaw` (`0.022`): множитель горизонтального движения мышью.
+        pub const M_YAW: usize = 0x1B_1164;
+
+        /// ✔ `default_fov` (`90`) — не сама переменная, а **имя** рядом с ней:
+        /// по этому адресу лежит строка `"default_fov"`, а `cvar_t` живёт
+        /// в `.data` `client.dll` и находится движком через реестр cvars.
+        pub const DEFAULT_FOV_NAME: usize = 0x228_AB8;
+
+        /// Значение `cvar_t` внутри структуры.
+        pub const VALUE: usize = 0x0C;
+
+        /// Указатель на имя внутри `cvar_t`.
+        pub const NAME: usize = 0x00;
+    }
+
+    // --- поле зрения ---
+
+    /// Кандидаты на `m_iFov` (текущий FOV, `90` по умолчанию, `40` при зуме AWP).
+    ///
+    /// Все три адреса в живом процессе читались как `90`, поэтому какой из них
+    /// именно работает — не определено; [`crate::state::EngineState::fov`] берёт
+    /// первый, а [`crate::validate`] сверяет все три между собой.
+    pub mod view {
+        /// `m_iFov`, кандидат 1.
+        pub const FOV_1: usize = 0x1CE_4D0;
+        /// `m_iFov`, кандидат 2.
+        pub const FOV_2: usize = 0x1F4_ACC;
+        /// `m_iFov`, кандидат 3.
+        pub const FOV_3: usize = 0x224_A34;
+    }
 }
 
 // =====================================================================

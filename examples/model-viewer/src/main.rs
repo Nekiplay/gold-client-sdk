@@ -22,6 +22,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use bind::{bind_pose, hitboxes, Box3, PlacedHitbox, BOX_EDGES};
+use golden_sdk::studio::BoneMatrix;
 use golden_sdk::math::Vec3;
 use golden_sdk::studio::{HitGroup, StudioModel};
 
@@ -65,13 +66,14 @@ fn main() {
 
     print_report(&path, &model);
 
-    let poses = bind_pose(&model);
-    let boxes = hitboxes(&model, &poses);
+    let raw_poses = bind_pose(&model);
+    let boxes = hitboxes(&model, &raw_poses);
+    let poses: Vec<BoneMatrix> = raw_poses.iter().map(|pose| BoneMatrix { m: pose.m }).collect();
 
     if std::env::var_os("MV_DEBUG").is_some() {
         println!("\nотладка: bind-данные и мировые позиции костей");
         for (index, bone) in model.bones().iter().enumerate() {
-            let pose = poses[index];
+            let pose = raw_poses[index];
             let (local, rotation) = (&bone.bind_pose[..3], &bone.bind_pose[3..6]);
             println!(
                 "  [{index:>2}] {:<22} parent {:>3}  local ({:>9.2}, {:>9.2}, {:>9.2})  rot ({:>8.3}, {:>8.3}, {:>8.3})  world ({:>8.2}, {:>8.2}, {:>8.2})",
@@ -178,7 +180,7 @@ fn print_report(path: &Path, model: &StudioModel) {
 ///
 /// Один символ — примерно два юнита по вертикали: рост игрока CS 1.6 около 72
 /// юнитов укладывается в 28 строк.
-fn print_ascii(model: &StudioModel, poses: &[bind::Matrix34], boxes: &[PlacedHitbox]) {
+fn print_ascii(model: &StudioModel, poses: &[BoneMatrix], boxes: &[PlacedHitbox]) {
     let positions: Vec<Vec3> = poses.iter().map(|pose| pose.origin()).collect();
     let edges: Vec<(usize, usize)> = model.skeleton_edges().collect();
 
@@ -331,7 +333,7 @@ fn ascii_cell(point: (f32, f32), center: (f32, f32), scale: f32) -> (usize, usiz
 fn write_preview(
     path: &Path,
     model: &StudioModel,
-    poses: &[bind::Matrix34],
+    poses: &[BoneMatrix],
     boxes: &[PlacedHitbox],
 ) -> std::io::Result<()> {
     let positions: Vec<Vec3> = poses.iter().map(|pose| pose.origin()).collect();

@@ -89,10 +89,13 @@ pub struct StudioBone {
     pub flags: i32,
     /// Индексы контроллеров по осям (или `-1`).
     pub bonecontroller: [i32; 6],
-    /// Bind-pose данные: повороты/позиция/масштаб в исходной позе.
+    /// Bind-pose данные: смещение, поворот и масштаб в исходной позе.
     ///
-    /// Для отрисовки скелета из рантайма не нужны — там используются готовые
-    /// матрицы из объекта рендерера.
+    /// Проверено на реальных моделях: `[0..3]` — смещение относительно родителя
+    /// в юнитах, `[3..6]` — поворот в радианах (у корня player-моделей
+    /// `-1.5708`), `[6..12]` — масштаб (значения порядка `1/256`). Для готовой
+    /// bind-позы есть [`StudioModel::bind_pose`]; в рантайме кости приходят
+    /// готовыми матрицами из объекта рендерера.
     pub bind_pose: [f32; 12],
 }
 
@@ -438,16 +441,71 @@ impl StudioModel {
 
     /// Габариты модели в её собственных координатах: `(минимум, максимум)`.
     ///
-    /// Берутся из заголовка (`min`/`max` — объём, покрывающий все анимации), а
-    /// не из хитбоксов: так коробка охватывает и тело, и руки в любой позе.
+    /// Берутся из заголовка (`min`/`max` — объём, покрывающий все анимации).
+    /// У игровых моделей CS 1.6 эти поля часто нулевые (проверено на
+    /// `gign.mdl`, `v_ak47.mdl`, `bag.mdl`), поэтому когда заголовок пуст —
+    /// возвращается объём по хитбоксам в bind-позе.
     pub fn hull(&self) -> Option<(Vec3, Vec3)> {
         let header = self.header();
         let (min, max) = (header.min, header.max);
         let size = Vec3::new(max.x - min.x, max.y - min.y, max.z - min.z);
-        if !min.is_finite() || !max.is_finite() || size.x <= 0.0 || size.z <= 0.0 {
-            return None;
+        if min.is_finite() && max.is_finite() && size.x > 0.0 && size.z > 0.0 {
+            return Some((min, max));
         }
-        Some((min, max))
+        self.hitbox_bounds()
+    }
+
+    /// Матрицы костей в bind-позе (в системе координат модели).
+    ///
+    /// Локальный поворот кости собирается как `Y(yaw) * X(pitch) * Z(roll)` —
+    /// порядок `AngleMatrix` из HLSDK. Смещение применяется после поворота, а
+    /// матрица ребёнка домножается на матрицу родителя.
+    pub fn bind_pose(&self) -> Vec<BoneMatrix> {
+        let bones = self.bones();
+        let mut out = vec![BoneMatrix::identity(); bones.len()];
+        for (index, bone) in bones.iter().enumerate() {
+            let data = &bone.bind_pose;
+            let local = BoneMatrix::translated(Vec3::new(data[0], data[1], data[2]))
+                .mul(&BoneMatrix::from_euler(data[3], data[4], data[5]));
+            let parent = bone.parent;
+            out[index] = if parent >= 0 && (parent as usize) < index {
+                out[parent as usize].mul(&local)
+            } else {
+                local
+            };
+        }
+        out
+    }
+
+    /// Объём по хитбоксам в bind-позе: восемь углов каждой коробки в мировых
+    /// координатах модели, затем общая рамка.
+    pub fn hitbox_bounds(&self) -> Option<(Vec3, Vec3)> {
+        let poses = self.bind_pose();
+        let mut min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+        let mut max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        let mut seen = false;
+        for hitbox in self.hitboxes() {
+            if hitbox.bone < 0 {
+                continue;
+            }
+            let Some(matrix) = poses.get(hitbox.bone as usize) else {
+                continue;
+            };
+            for x in [hitbox.bbmin.x, hitbox.bbmax.x] {
+                for y in [hitbox.bbmin.y, hitbox.bbmax.y] {
+                    for z in [hitbox.bbmin.z, hitbox.bbmax.z] {
+                        let point = matrix.transform_point(Vec3::new(x, y, z));
+                        if !point.is_finite() {
+                            continue;
+                        }
+                        seen = true;
+                        min = Vec3::new(min.x.min(point.x), min.y.min(point.y), min.z.min(point.z));
+                        max = Vec3::new(max.x.max(point.x), max.y.max(point.y), max.z.max(point.z));
+                    }
+                }
+            }
+        }
+        seen.then_some((min, max))
     }
 
     pub fn len(&self) -> usize {
@@ -557,6 +615,17 @@ impl StudioModel {
     }
 }
 
+/// Умножение матриц 3x3 (используется при сборке поворота из углов Эйлера).
+fn mul3(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut out = [[0.0f32; 3]; 3];
+    for (row, out_row) in out.iter_mut().enumerate() {
+        for (column, cell) in out_row.iter_mut().enumerate() {
+            *cell = a[row][0] * b[0][column] + a[row][1] * b[1][column] + a[row][2] * b[2][column];
+        }
+    }
+    out
+}
+
 /// Матрица кости 3x4 (`float[3][4]`), как её хранит движок.
 ///
 /// Трансляция лежит в `[0][3]`, `[1][3]`, `[2][3]`, то есть в плоском массиве
@@ -570,6 +639,56 @@ pub struct BoneMatrix {
 impl BoneMatrix {
     pub const fn identity() -> Self {
         Self { m: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] }
+    }
+
+    /// Перенос на вектор.
+    pub fn translated(position: Vec3) -> Self {
+        let mut out = Self::identity();
+        out.m[3] = position.x;
+        out.m[7] = position.y;
+        out.m[11] = position.z;
+        out
+    }
+
+    /// Поворот по углам Эйлера в радианах: `Y(yaw) * X(pitch) * Z(roll)`.
+    ///
+    /// Та же последовательность, что в `AngleMatrix` из HLSDK. Собирается
+    /// явным умножением трёх матриц 3x3 — так в формуле не перепутать строки и
+    /// столбцы, что даёт «сложенный в точку» скелет.
+    pub fn from_euler(pitch: f32, yaw: f32, roll: f32) -> Self {
+        let (sp, cp) = pitch.sin_cos();
+        let (sy, cy) = yaw.sin_cos();
+        let (sr, cr) = roll.sin_cos();
+
+        let ry = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
+        let rx = [[1.0, 0.0, 0.0], [0.0, cp, -sp], [0.0, sp, cp]];
+        let rz = [[cr, -sr, 0.0], [sr, cr, 0.0], [0.0, 0.0, 1.0]];
+        let m = mul3(&mul3(&ry, &rx), &rz);
+        Self {
+            m: [
+                m[0][0], m[0][1], m[0][2], 0.0,
+                m[1][0], m[1][1], m[1][2], 0.0,
+                m[2][0], m[2][1], m[2][2], 0.0,
+            ],
+        }
+    }
+
+    /// `self * other`: обычное умножение 3x4 (поворот плюс смещение).
+    pub fn mul(&self, other: &Self) -> Self {
+        let (a, b) = (&self.m, &other.m);
+        let mut out = [0.0f32; 12];
+        for row in 0..3 {
+            for column in 0..3 {
+                out[row * 4 + column] = a[row * 4] * b[column]
+                    + a[row * 4 + 1] * b[4 + column]
+                    + a[row * 4 + 2] * b[8 + column];
+            }
+            out[row * 4 + 3] = a[row * 4] * b[3]
+                + a[row * 4 + 1] * b[7]
+                + a[row * 4 + 2] * b[11]
+                + a[row * 4 + 3];
+        }
+        Self { m: out }
     }
 
     /// Позиция кости в мире.

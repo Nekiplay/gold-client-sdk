@@ -62,6 +62,7 @@ pub mod offsets;
 pub mod player;
 pub mod process;
 pub mod renderer;
+pub mod state;
 pub mod studio;
 pub mod validate;
 
