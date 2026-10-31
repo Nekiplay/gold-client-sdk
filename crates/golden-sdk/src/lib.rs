@@ -63,6 +63,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod concommand;
+pub mod console;
 pub mod draw;
 pub mod engine;
 pub mod glcolor;

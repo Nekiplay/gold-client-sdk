@@ -33,6 +33,7 @@
 
 pub mod commands;
 pub mod concommand;
+pub mod console;
 pub mod game;
 pub mod hook_macro;
 pub mod hooks;

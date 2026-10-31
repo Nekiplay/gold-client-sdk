@@ -37,28 +37,7 @@ const MODULE_WAIT: Duration = Duration::from_secs(180);
 /// Как часто проверять, что подмена интерфейса на месте.
 const WATCHDOG: Duration = Duration::from_millis(250);
 
-/// Консольная команда `gc_status`: печатает отчёт в лог мода.
-///
-/// # Safety
-/// Вызывается движком из игрового потока; аргументы не разыменовываем.
-unsafe extern "C" fn cmd_status(_args: *const golden_std::concommand::CommandArgs) {
-    let report = format!(
-        "мод скелетов: команд {}, перехватов {} (включено {}), скелетов {}",
-        golden_std::concommand::count(),
-        golden_std::hooks::count(),
-        golden_std::hooks::enabled(),
-        overlay::drawn()
-    );
-    // Свой вывод: печатаем в консоль игры, а не только в лог.
-    golden_std::concommand::print(&report);
-    golden_sdk::log!("gc_status: {report}");
-    if let Some(report) = overlay::take_report() {
-        golden_std::concommand::print(&report);
-        golden_sdk::log!("gc_status: {report}");
-    }
-}
-
-/// Консольная команда `gc_unload`: выгружает мод, не перезапуская игру.
+/// Консольная команда `unload_esp`: выгружает мод, не перезапуская игру.
 ///
 /// # Safety
 /// Вызывается движком из игрового потока; аргументы не разыменовываем.
@@ -111,34 +90,25 @@ fn bootstrap() {
         }
     }
 
-    // Выгрузка без перезапуска игры: `F12` или команда `gc_unload` в консоли.
+    // Выгрузка без перезапуска игры: `F12` или команда `unload_esp` в консоли.
     // Свои хуки пример не снимает — это делает `golden_std::unload` сам.
     golden_sdk::log!("F12 — выгрузка мода без перезапуска игры");
 
-    // Свои команды: под двумя именами, потому что в консоли набирают и `gc_`,
-    // и `gs_`. Обе снимаются автоматически при выгрузке мода.
-    //
-    // `hidden()` — чтобы в консоли не оставалось строки `] gs_unload`: движок
-    // печатает её как историю ввода, и без фильтра она висит над ответом.
-    for name in ["gc_status", "gs_status"] {
-        match golden_std::concommand::Command::new(name, cmd_status)
-            .help("отчёт мода скелетов")
-            .hidden()
-            .register()
-        {
-            Ok(()) => golden_sdk::log!("команда {name} зарегистрирована"),
-            Err(error) => golden_sdk::log!("{name} не зарегистрирована: {error}"),
-        }
+    // Единственная команда мода — выгрузка; снимается автоматически.
+    match golden_std::concommand::Command::new("unload_esp", cmd_unload)
+        .help("выгрузить мод")
+        .hidden()
+        .register()
+    {
+        Ok(()) => golden_sdk::log!("команда unload_esp зарегистрирована"),
+        Err(error) => golden_sdk::log!("unload_esp не зарегистрирована: {error}"),
     }
-    for name in ["unload_esp"] {
-        match golden_std::concommand::Command::new(name, cmd_unload)
-            .help("выгрузить мод")
-            .hidden()
-            .register()
-        {
-            Ok(()) => golden_sdk::log!("команда {name} зарегистрирована"),
-            Err(error) => golden_sdk::log!("{name} не зарегистрирована: {error}"),
-        }
+
+    // Эхо набранной команды убираем на стороне клиента: консоль Gold Client
+    // держит историю в `GameUI.dll` и про печать движка ничего не знает,
+    // поэтому фильтр в `hw.dll` её не ловит. Перехват снимается при выгрузке.
+    if golden_std::console::install(&["unload_esp"]) {
+        golden_sdk::log!("консоль: эхо команд скрыто");
     }
 
     // Управление извне: строки из файла рядом с логом исполняются как команды
