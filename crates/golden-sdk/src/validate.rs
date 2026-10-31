@@ -4,6 +4,10 @@
 //! невнятное. Здесь набор дешёвых проверок, каждая из которых ловит именно
 //! уехавшее смещение, а не «что-то пошло не так».
 
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
 use core::ffi::c_void;
 
 use crate::engine::EngineStudioApi;

@@ -12,6 +12,8 @@
 //! 3. [`StudioRenderer::studio_model`] — модель, которую сейчас рисовали.
 //! 4. [`StudioRenderer::bone_origin`] — позиции костей в мире.
 
+use alloc::vec::Vec;
+
 use core::ffi::{c_void, CStr};
 
 use crate::engine::EntityRef;
@@ -205,6 +207,12 @@ impl StudioRenderer {
     ///
     /// `false`, если слот недоступен или GL ещё не поднят.
     pub fn render_wireframe(&self, color: crate::draw::Color, width: f32) -> bool {
+        self.render_wireframe_style(crate::draw::WireStyle::new(color).width(width))
+    }
+
+    /// То же, что [`StudioRenderer::render_wireframe`], но оформление задаётся
+    /// [`crate::draw::WireStyle`]: цвет, толщина и видимость сквозь стены.
+    pub fn render_wireframe_style(&self, style: crate::draw::WireStyle) -> bool {
         let Some(entry) = self.method(SLOT_RENDER_MODEL) else {
             return false;
         };
@@ -217,7 +225,7 @@ impl StudioRenderer {
         let this = self.ptr as *mut c_void;
         // SAFETY: GL-контекст активен в этом потоке.
         unsafe {
-            gl.wireframe(color, width, || {
+            gl.wireframe_style(style, || {
                 // SAFETY: тот же контракт, что и у перехвата отрисовки.
                 render(this);
             });
@@ -526,6 +534,26 @@ impl StudioRenderer {
         self.hitboxes_world(model)
             .into_iter()
             .find(|hitbox| hitbox.group == group)
+    }
+
+    /// Мировой объём всего тела: `(минимум, максимум)` по всем хитбоксам.
+    ///
+    /// Это ровно то, что движок считает попаданием, поэтому объём годится как
+    /// привязка для подписей: верх — макушка, низ — подошвы. Скелет для этого не
+    /// подходит: в нём нет костей стоп и пальцев, а поднятая в анимации рука
+    /// оказывается выше головы.
+    ///
+    /// `None`, если кости не готовы (мусор/нули в матрицах).
+    pub fn body_bounds(&self, model: &StudioModel) -> Option<(Vec3, Vec3)> {
+        let mut min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+        let mut max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        let mut any = false;
+        for hitbox in self.hitboxes_world(model) {
+            min = Vec3::new(min.x.min(hitbox.min.x), min.y.min(hitbox.min.y), min.z.min(hitbox.min.z));
+            max = Vec3::new(max.x.max(hitbox.max.x), max.y.max(hitbox.max.y), max.z.max(hitbox.max.z));
+            any = true;
+        }
+        (any && min.is_finite() && max.is_finite()).then_some((min, max))
     }
 
     /// Мировой AABB хитбокса: восемь углов `bbmin`/`bbmax` переводятся матрицей

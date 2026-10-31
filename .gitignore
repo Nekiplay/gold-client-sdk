@@ -11,3 +11,7 @@
 *.wad
 *.spr
 *.pak
+# Сборки и временные копии DLL для инъекции
+dist/
+*.dll
+golden-commands.txt

@@ -26,6 +26,14 @@ use golden_sdk::studio::StudioModel;
 /// Сколько снимок считается свежим.
 pub const POSE_TTL: Duration = Duration::from_millis(500);
 
+/// Насколько корень скелета может отстоять от позиции сущности.
+///
+/// У игрока корневая кость (`origins[0]`) стоит у ног, а позиция сущности —
+/// тоже у ног, поэтому расхождение в пределах шага нормально (бег, лестница,
+/// прыжок). Десятки юнитов — уже чужая система координат: так выглядят
+/// матрицы, посчитанные для вьюмодели оружия.
+pub const POSE_MAX_ROOT_OFFSET: f32 = 48.0;
+
 /// Поза одной сущности: где в мире находятся её кости и голова.
 #[derive(Debug, Clone)]
 pub struct Pose {
@@ -36,6 +44,11 @@ pub struct Pose {
     pub origins: Vec<Vec3>,
     /// Центр головы и радиус — из хитбокса головы, а не «на глаз».
     pub head: Option<(Vec3, f32)>,
+    /// Мировой объём тела по хитбоксам: `(минимум, максимум)`.
+    ///
+    /// Снят в том же проходе, где считались кости, поэтому относится именно к
+    /// этому игроку. Верх — макушка, низ — подошвы: по ним встают подписи.
+    pub bounds: Option<(Vec3, Vec3)>,
     /// Когда снимок сделан.
     pub at: Instant,
 }
@@ -105,10 +118,24 @@ impl PoseCache {
         let Some(origins) = renderer.bone_origins_checked(model) else {
             return false;
         };
+        // Корень скелета у игрока стоит у его ног: в мире он совпадает с
+        // позицией сущности в пределах шага. Матрицы, посчитанные для
+        // вьюмодели оружия (руки от первого лица), лежат у камеры, и подписи по
+        // ним уезжают в середину экрана — такую позу не запоминаем.
+        let Some(origin) = golden_sdk::engine::EntityRef::from_raw(entity).map(|e| e.origin()) else {
+            return false;
+        };
+        if origins[0].distance_to(origin) > POSE_MAX_ROOT_OFFSET {
+            return false;
+        }
+        let bounds = renderer
+            .body_bounds(model)
+            .filter(|(lowest, highest)| (40.0..=120.0).contains(&(highest.z - lowest.z)));
         let pose = Pose {
             model: model.name().to_string(),
             origins,
             head: renderer.head_marker(model),
+            bounds,
             at: Instant::now(),
         };
         let Ok(mut cache) = self.inner.lock() else {

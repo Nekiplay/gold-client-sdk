@@ -10,6 +10,8 @@
 //! Имя в заголовке `.mdl` хранится **без** каталога `models/`, например
 //! `terror\terror.mdl`, поэтому путь в игре и путь в заголовке — разные вещи.
 
+use alloc::string::{String, ToString};
+
 use crate::draw::Color;
 
 /// Номер команды из `g_PlayerExtraInfo` (`TeamInfo`).

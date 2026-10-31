@@ -8,6 +8,9 @@
 //! слоты, чьё HLSDK-имя не подтверждено, названы по смещению (`PTR_0x40`).
 //! Подробности — `docs/STUDIO_REVERSE.md`, раздел 3.
 
+use alloc::format;
+use alloc::string::{String, ToString};
+
 use core::ffi::{CStr, c_void};
 
 use crate::math::Vec3;
@@ -87,10 +90,10 @@ impl EntityRef {
 
     /// Номер игрока (слот клиента) из `player_info_t`.
     ///
-    /// Основной путь — поле [`crate::offsets::entity::INDEX`] (`+0x404`): оно
-    /// заполняется сразу и на всех проверенных сущностях совпадало с индексом.
-    /// `player_info_t` первым полем хранит не номер, поэтому используется только
-    /// как запасной вариант.
+    /// Основной путь — поле [`crate::offsets::entity::INDEX`] (`+0x00`), в нём
+    /// лежит номер слота: у ботов и игроков он совпадал с их моделью и команда
+    /// находилась правильно. `player_info_t` первым полем хранит не номер,
+    /// поэтому используется только как запасной вариант.
     pub fn player_index(&self) -> i32 {
         // SAFETY: указатель на сущность проверен при создании.
         let direct: i32 = unsafe { process::read(self.addr() + crate::offsets::entity::INDEX) };
@@ -163,13 +166,21 @@ impl EntityRef {
 /// бы её напечатали в консоли. Поэтому `+jump` нужно добавлять каждый кадр,
 /// а снимать — парным `-jump`.
 ///
+/// `Cbuf_Execute` режет буфер по `'\n'` и `';'` (проверено по `Cbuf_AddText`
+/// → `0x10018060` → `0x10017fd0` в Ghidra), так что `"-jump;+jump"` — это две
+/// команды. Но обе они попадают в **один** проход командного буфера, то есть в
+/// один кадр, и движок видит кнопку всё ещё зажатой (`pmove->oldbuttons &
+/// IN_JUMP`) — прыжка не будет. Чтобы команды разъехались по кадрам, ставьте их
+/// через `Scheduler::after_frames`.
+///
 /// Возвращает `false`, если движок ещё не загружен или строка содержит
 /// нулевой байт.
 pub fn run_command(command: &str) -> bool {
     let Some(base) = process::hw_base() else {
         return false;
     };
-    let Ok(text) = std::ffi::CString::new(command) else {
+    let line = format!("{}\n", command.trim_end_matches(['\r', '\n']));
+    let Ok(text) = alloc::ffi::CString::new(line) else {
         return false;
     };
     // SAFETY: `hw+0x031E80` — `Cbuf_AddText(const char *)`, cdecl; строка живёт

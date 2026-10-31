@@ -15,6 +15,8 @@
 //! }
 //! ```
 
+use alloc::string::String;
+
 use crate::math::Vec3;
 use crate::offsets::{client, hw, ref_params};
 use crate::process;
@@ -56,8 +58,13 @@ pub struct EngineState;
 
 impl EngineState {
     /// ✔ Клиент загрузил карту и находится в игре (не в меню и не в загрузке).
+    ///
+    /// Определяется по живому `ref_params`: движок заполняет эту структуру
+    /// каждый кадр, пока клиент в игре, и `ref_params::TIME` при этом растёт.
+    /// Прежний кандидат `hw+0x274B18` не подошёл: в живой игре там лежит `0`
+    /// (см. [`hw::IN_GAME_UNVERIFIED`]).
     pub fn in_game() -> bool {
-        flag(hw(hw::IN_GAME))
+        Self::time() > 0.0
     }
 
     /// ✔ Открыто меню (`Esc`); мир при этом продолжает идти.
@@ -306,7 +313,7 @@ mod tests {
     #[test]
     fn state_globals_are_inside_engine_image() {
         const IMAGE: usize = 0x3CA_6000;
-        for offset in [hw::IN_GAME, hw::IN_MENU, hw::CHAT_OPENED] {
+        for offset in [hw::IN_GAME_UNVERIFIED, hw::IN_MENU, hw::CHAT_OPENED] {
             assert!(offset < IMAGE - 0x40, "{offset:#x} вне образа hw.dll");
         }
     }

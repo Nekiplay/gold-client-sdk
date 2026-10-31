@@ -38,7 +38,7 @@ impl core::fmt::Display for HookError {
     }
 }
 
-impl std::error::Error for HookError {}
+impl core::error::Error for HookError {}
 
 impl From<retour::Error> for HookError {
     fn from(value: retour::Error) -> Self {
@@ -123,9 +123,16 @@ impl SwappedInterface {
         let slot = interface_slot().ok_or(HookError::NoInterface)?;
         // SAFETY: слот получен из `hw.dll`.
         let previous = unsafe { *slot };
+        if previous.is_null() || ours.is_null() {
+            return Err(HookError::NoInterface);
+        }
         // SAFETY: слот валиден, `ours` живёт дольше.
         unsafe { *slot = ours };
-        Ok(Self { slot, ours, previous })
+        Ok(Self {
+            slot,
+            ours,
+            previous,
+        })
     }
 
     /// Интерфейс, который был до подмены.
@@ -150,7 +157,9 @@ impl SwappedInterface {
 
 impl Drop for SwappedInterface {
     fn drop(&mut self) {
-        // SAFETY: слот валиден на всё время жизни объекта.
+        // SAFETY: слот валиден на всё время жизни объекта. Указатель движка
+        // возвращается к клиентской таблице: иначе он останется указывать в
+        // нашу DLL и после освобождения прыгнет в пустую память.
         unsafe { *self.slot = self.previous };
     }
 }

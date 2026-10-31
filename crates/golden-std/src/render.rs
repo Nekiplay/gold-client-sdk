@@ -21,6 +21,81 @@ use crate::game::Game;
 
 pub use golden_sdk::draw::Color;
 
+/// Оформление обводки модели: цвет, толщина и видимость сквозь стены.
+///
+/// Цвет выбирается по модели, команде игрока или чему угодно ещё — достаточно
+/// вернуть готовый стиль из [`Overlay::outline_of`] или передать его в
+/// [`outline`]:
+///
+/// ```no_run
+/// # use golden_std::{Color, OutlineStyle};
+/// let style = OutlineStyle::new(Color::RED).width(2.0).through_walls(false);
+/// assert_eq!(style.color(), Color::RED);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutlineStyle {
+    wire: draw::WireStyle,
+}
+
+impl OutlineStyle {
+    /// Цветная обводка: 1.5 px, видна сквозь стены.
+    pub fn new(color: Color) -> Self {
+        Self {
+            wire: draw::WireStyle::new(color),
+        }
+    }
+
+    /// Толщина линий в пикселях (приводится к 1..=10).
+    pub fn width(mut self, width: f32) -> Self {
+        self.wire = self.wire.width(width);
+        self
+    }
+
+    /// `false` — контур прячется за телом и стенами, как обычная геометрия.
+    pub fn through_walls(mut self, through_walls: bool) -> Self {
+        self.wire = self.wire.through_walls(through_walls);
+        self
+    }
+
+    /// Цвет линий.
+    pub fn color(&self) -> Color {
+        self.wire.color
+    }
+
+    /// Толщина линий в пикселях.
+    pub fn line_width(&self) -> f32 {
+        self.wire.width
+    }
+
+    /// Виден ли контур сквозь стены и другие модели.
+    pub fn is_through_walls(&self) -> bool {
+        self.wire.through_walls
+    }
+}
+
+impl Default for OutlineStyle {
+    fn default() -> Self {
+        Self::new(Color::WHITE)
+    }
+}
+
+/// Обводит то, что нарисует `draw` (обычно вызов движка с текущей моделью).
+///
+/// Нужен в перехвате отрисовки, где модель рисует сам движок: обёртка меняет
+/// режим полигонов и цвет на время вызова и возвращает GL-состояние назад.
+/// `false`, если GL ещё не поднят.
+pub fn outline(style: OutlineStyle, draw: impl FnOnce()) -> bool {
+    // SAFETY: вызывается из перехвата отрисовки, где контекст уже активен.
+    let Some(gl) = (unsafe { Gl::get() }) else {
+        return false;
+    };
+    // SAFETY: `draw` — тот же вызов движка, что был бы и без обводки.
+    unsafe {
+        gl.wireframe_style(style.wire, draw);
+    }
+    true
+}
+
 /// Ширина окна игры в пикселях.
 const DEFAULT_FOV: f32 = 90.0;
 
@@ -86,7 +161,44 @@ impl Overlay {
     ///
     /// `false`, если движок не дал слот или GL не поднят.
     pub fn outline(&self, renderer: &StudioRenderer, color: Color, width: f32) -> bool {
-        renderer.render_wireframe(color, width)
+        self.outline_style(renderer, OutlineStyle::new(color).width(width))
+    }
+
+    /// Перерисовывает подготовленную движком модель контурами с заданным
+    /// оформлением.
+    ///
+    /// `false`, если движок не дал слот или GL не поднят.
+    pub fn outline_style(&self, renderer: &StudioRenderer, style: OutlineStyle) -> bool {
+        renderer.render_wireframe_style(style.wire)
+    }
+
+    /// Обводит модель, выбирая оформление по ней самой — например, цвет по
+    /// команде игрока или по имени модели:
+    ///
+    /// ```
+    /// # use golden_std::{Color, OutlineStyle, Overlay};
+    /// # use golden_sdk::renderer::StudioRenderer;
+    /// # fn demo(overlay: &Overlay, renderer: &StudioRenderer) {
+    /// overlay.outline_of(renderer, |model| {
+    ///     if model.name().starts_with("terror") {
+    ///         OutlineStyle::new(Color::RED)
+    ///     } else {
+    ///         OutlineStyle::new(Color::CYAN)
+    ///     }
+    /// });
+    /// # }
+    /// ```
+    ///
+    /// `false`, если у рендерера сейчас нет модели или слот недоступен.
+    pub fn outline_of(
+        &self,
+        renderer: &StudioRenderer,
+        style: impl FnOnce(&StudioModel) -> OutlineStyle,
+    ) -> bool {
+        let Some(model) = renderer.studio_model() else {
+            return false;
+        };
+        self.outline_style(renderer, style(&model))
     }
 
     /// Коробка вокруг модели: 12 рёбер AABB, видимых сквозь стены.

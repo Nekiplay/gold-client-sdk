@@ -78,6 +78,37 @@ pub mod hw {
     /// принимающая строку. Найдено по строке «Cbuf_AddText: buffer overflow».
     pub const CBUF_ADD_TEXT: usize = 0x03_1E80;
 
+    /// `ICvar *g_pCVar` — интерфейс консоли. Читается в
+    /// `ConCommandBase::Add` (`0x10019FE0`) как `g_pCVar->vtable[0]`, то есть
+    /// `CCvar::RegisterConCommand` (`0x100BC170`).
+    pub const G_P_CVAR: usize = 0x03E_222C;
+
+    /// Статический объект `ConCommand` движка для команды `cmdlist`
+    /// (`0x102D9CC4`). У него после инициализации заполнены все поля, включая
+    /// непонятные `+0x18`/`+0x1C`/`+0x24`/`+0x28`, поэтому он служит шаблоном
+    /// для своих команд — см. [`crate::concommand`].
+    pub const CON_COMMAND_TEMPLATE: usize = 0x02D_9CC4;
+
+    /// `CCvar::RegisterConCommand(ConCommandBase *)` — вставка в список и хеш.
+    /// Вызывать не нужно: это делает `ConCommandBase::Add`.
+    pub const CCVAR_REGISTER: usize = 0x0B_C170;
+
+    /// `CCvar::UnregisterConCommand(ConCommandBase *)` — снять флаг `registered`,
+    /// вынуть из списка и хеша. Вызывать не нужно: это делает
+    /// `ConCommandBase::Remove` (`0x1001A000`).
+    pub const CCVAR_UNREGISTER: usize = 0x0B_C310;
+
+    // --- ввод ---
+
+    /// `void Key_Event(int keynum, int down)` — нажатие (`1`) и отпускание (`0`)
+    /// клавиши: здесь движок ищет бинд и отдаёт `+jump`/`+forward` в командный
+    /// буфер. Соглашение `__fastcall` (`keynum` в `ECX`, `down` в `EDX`) —
+    /// проверено по прологу `0x10083480` в Ghidra.
+    ///
+    /// Перехват этой функции глушит клавишу целиком: она не доходит ни до биндов,
+    /// ни до массива нажатых клавиш.
+    pub const KEY_EVENT: usize = 0x08_3480;
+
     // --- функции моделей (cdecl) ---
 
     /// `model_t *Mod_ForName(int load, const char *name)`.
@@ -111,8 +142,13 @@ pub mod hw {
 
     // --- состояние мира ---
 
-    /// ✔ `int cl.in_game` — клиент загрузил карту и находится в игре (`1`).
-    pub const IN_GAME: usize = 0x27_4B18;
+    /// ⚠ `int` по адресу `hw+0x274B18`, который считался `cl.in_game`.
+    ///
+    /// Проверено в живой игре: в момент, когда карта загружена, игрок стоит на
+    /// земле и `ref_params::TIME` растёт (160.5 с), здесь лежит `0`. Значение
+    /// с «в игре» не совпадает, поэтому [`super::super::state::EngineState::in_game`]
+    /// им **не** пользуется и определяет игру по живому `ref_params`.
+    pub const IN_GAME_UNVERIFIED: usize = 0x27_4B18;
 
     /// ✔ `int` — открыто меню (`1`), при этом мир продолжает идти.
     pub const IN_MENU: usize = 0x333_A62C;
@@ -520,9 +556,11 @@ pub mod api {
 pub mod entity {
     /// ✔ Номер сущности/игрока.
     ///
-    /// Проверено `HUD_ProcessPlayerState` (`client+0x039070`): номер берётся как
-    /// `*(int *)(entity + 4)` и сверяется с номером локального игрока.
-    pub const INDEX: usize = 0x04;
+    /// Проверено в игре по строкам лога: у сущностей `0x…2a04`/`0x…d7a8`/`0x…35c8`
+    /// поле `+0` даёт 9/2/10 и совпадает с моделью, а `+4` у всех равно 1 — это
+    /// `modelindex`, а не номер слота. Раньше здесь стоял `0x04`, и все модели
+    /// получали команду игрока со слотом 1.
+    pub const INDEX: usize = 0x00;
 
     /// ✔ Позиция в мире.
     pub const ORIGIN: usize = 0xB48;

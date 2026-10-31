@@ -3,6 +3,9 @@
 //! Всё, что касается «как найти игру», живёт здесь, чтобы функции игры не
 //! размазывали `GetModuleHandle` по коду.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use core::ffi::c_void;
 
 /// Возвращает базу загруженного модуля по имени (`"hw.dll"`, `"client.dll"`).
@@ -31,6 +34,85 @@ pub fn hw_base() -> Option<usize> {
 /// База `client.dll` (клиент CS).
 pub fn client_base() -> Option<usize> {
     module_base("client.dll")
+}
+
+/// Адрес функции, которую экспортирует загруженный модуль.
+///
+/// Нужна для `opengl32.dll`: движок достаёт GL-функции через `GetProcAddress`
+/// и держит их в своей таблице, поэтому сравнение с настоящим адресом экспорта —
+/// единственный способ узнать, какие ячейки этой таблицы — цвет.
+pub fn export(module: &str, name: &str) -> Option<usize> {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+    let mut module_buf = [0u8; 260];
+    let module_bytes = module.as_bytes();
+    if module_bytes.len() >= module_buf.len() {
+        return None;
+    }
+    module_buf[..module_bytes.len()].copy_from_slice(module_bytes);
+
+    let mut name_buf = [0u8; 128];
+    let name_bytes = name.as_bytes();
+    if name_bytes.len() >= name_buf.len() {
+        return None;
+    }
+    name_buf[..name_bytes.len()].copy_from_slice(name_bytes);
+
+    // SAFETY: обе строки NUL-терминированы; вызовы только читают.
+    unsafe {
+        let handle = GetModuleHandleA(module_buf.as_ptr());
+        if handle.is_null() {
+            return None;
+        }
+        let proc = GetProcAddress(handle, name_buf.as_ptr());
+        proc.map(|f| f as usize)
+    }
+}
+
+/// Размер образа модуля в памяти (`SizeOfImage` из PE-заголовка).
+///
+/// # Safety
+/// `base` — база загруженного модуля, адрес читается напрямую.
+pub unsafe fn module_size(base: usize) -> Option<usize> {
+    // SAFETY: контракт передан вызывающим: PE-заголовок по базе модуля.
+    unsafe {
+        let lfanew: u32 = read(base + 0x3C);
+        if lfanew == 0 || lfanew as usize > 0x1000 {
+            return None;
+        }
+        // Смещение `SizeOfImage` в OptionalHeader одинаково для PE32 и PE32+.
+        let size: u32 = read(base + lfanew as usize + 0x18 + 0x38);
+        (size as usize > 0x1000).then_some(size as usize)
+    }
+}
+
+/// Можно ли писать в память по адресу (страница выделена и доступна на запись).
+///
+/// Нужно, чтобы правка таблицы указателей не задела код: значения там могут
+/// случайно совпасть с адресом GL-функции, а запись в `.text` — это порча.
+pub fn is_writable(addr: usize) -> bool {
+    use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION};
+
+    let mut info: MEMORY_BASIC_INFORMATION = unsafe { core::mem::zeroed() };
+    let size = core::mem::size_of::<MEMORY_BASIC_INFORMATION>();
+    // SAFETY: `info` — валидный буфер нужного размера.
+    let written = unsafe {
+        VirtualQuery(addr as *const c_void, &mut info, size)
+    };
+    if written == 0 {
+        return false;
+    }
+    const PAGE_READWRITE: u32 = 0x04;
+    const PAGE_WRITECOPY: u32 = 0x08;
+    const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+    const PAGE_EXECUTE_WRITECOPY: u32 = 0x80;
+    const PROTECTION_MASK: u32 = 0xFF;
+    let protection = info.Protect & PROTECTION_MASK;
+    info.State == 0x1000
+        && matches!(
+            protection,
+            PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY
+        )
 }
 
 /// Читает значение типа `T` по адресу.

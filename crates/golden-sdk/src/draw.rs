@@ -19,6 +19,7 @@
 //! нарисует в чужой контекст.
 
 use core::ffi::CStr;
+use alloc::boxed::Box;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use windows_sys::Win32::System::LibraryLoader::{
@@ -40,6 +41,20 @@ const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
 const GL_TEXTURE_2D: u32 = 0x0DE1;
 const GL_DEPTH_TEST: u32 = 0x0B71;
 const GL_ALL_ATTRIB_BITS: u32 = 0x000F_FFFF;
+/// `GL_LIGHTING`: без этого `glColor4f` не влияет на геометрию — цвет пикселя
+/// считает освещение, и контур выходит цветом материала движка, а не нашим.
+const GL_LIGHTING: u32 = 0x0B50;
+/// `GL_COLOR_MATERIAL`: пока lighting включён, движок скормил его материал
+/// глобальному ambient, и `glColor4f` на геометрию не действует. Выключаем его
+/// вместе с освещением — тогда цвет берётся из текущего цвета.
+const GL_COLOR_MATERIAL: u32 = 0x0B57;
+const GL_CULL_FACE: u32 = 0x0B44;
+/// `GL_COLOR_ARRAY` — массив цветов вершин.
+///
+/// Если движок рисует модель через vertex arrays, цвет каждой вершины он
+/// берёт из этого массива, и `glColor*` в этот момент не действует. Отключаем
+/// массив на время своего прохода — тогда GL снова берёт текущий цвет.
+const GL_COLOR_ARRAY: u32 = 0x8076;
 /// `glPolygonMode` — какие грани и как рисовать.
 const GL_FRONT_AND_BACK: u32 = 0x0408;
 const GL_LINE: u32 = 0x1B01;
@@ -82,6 +97,46 @@ impl Color {
 
 type BeginFn = unsafe extern "system" fn(u32);
 type EndFn = unsafe extern "system" fn();
+/// Как рисовать контур модели: цвет, толщина и проверка глубины.
+///
+/// Отдельный тип нужен, чтобы вызывающий код мог описать обводку один раз
+/// (например, по команде игрока) и передать её в [`Gl::wireframe_style`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WireStyle {
+    pub color: Color,
+    /// Толщина линий в пикселях, приводится к 1..=10.
+    pub width: f32,
+    /// `true` — контур виден сквозь стены и другие модели (глубина выключена).
+    pub through_walls: bool,
+}
+
+impl WireStyle {
+    /// Цветная обводка толщиной 1.5 px, видимая сквозь стены.
+    pub const fn new(color: Color) -> Self {
+        Self {
+            color,
+            width: 1.5,
+            through_walls: true,
+        }
+    }
+
+    pub const fn width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
+    pub const fn through_walls(mut self, through_walls: bool) -> Self {
+        self.through_walls = through_walls;
+        self
+    }
+}
+
+impl Default for WireStyle {
+    fn default() -> Self {
+        Self::new(Color::WHITE)
+    }
+}
+
 type Vertex3fFn = unsafe extern "system" fn(f32, f32, f32);
 type Color4fFn = unsafe extern "system" fn(f32, f32, f32, f32);
 type EnableFn = unsafe extern "system" fn(u32);
@@ -95,6 +150,7 @@ type OrthoFn = unsafe extern "system" fn(f64, f64, f64, f64, f64, f64);
 type PushMatrixFn = unsafe extern "system" fn();
 type GetIntegervFn = unsafe extern "system" fn(u32, *mut i32);
 type PolygonModeFn = unsafe extern "system" fn(u32, u32);
+type IsEnabledFn = unsafe extern "system" fn(u32) -> u32;
 
 /// Указатели на нужные функции `opengl32.dll`.
 #[derive(Debug)]
@@ -116,6 +172,9 @@ struct Fns {
     pop_matrix: PushMatrixFn,
     get_integerv: GetIntegervFn,
     polygon_mode: PolygonModeFn,
+    is_enabled: IsEnabledFn,
+    disable_client_state: EnableFn,
+    enable_client_state: EnableFn,
 }
 
 /// Доступ к рисованию OpenGL.
@@ -124,9 +183,59 @@ pub struct Gl {
     fns: Fns,
 }
 
+/// Разовый замер GL-состояния: печатается один раз при первом тексте.
+pub mod probe {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static LEFT: AtomicUsize = AtomicUsize::new(1);
+
+    /// Нужен ли ещё замер (и забирает право на него).
+    pub fn wanted() -> bool {
+        LEFT.load(Ordering::Acquire) == 0
+    }
+
+    /// Единожды печатает состояние флагов GL.
+    pub fn report(enabled: [u32; 6]) {
+        if LEFT.swap(0, Ordering::AcqRel) == 0 {
+            return;
+        }
+        crate::log!(
+            "GL: lighting {} глубина {};
+             смешивание {};
+             текстура {}",
+            enabled[0] as i32,
+            enabled[1] as i32,
+            enabled[2] as i32,
+            enabled[3] as i32
+        );
+    }
+}
+
 static GL: AtomicUsize = AtomicUsize::new(0);
 
 impl Gl {
+    /// Читает интересующие флаги: `lighting`, `depth`, `blend`, `texture`, `cull`,
+    /// `color material`.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`].
+    unsafe fn probe_enabled(&self) -> [u32; 6] {
+        const FLAGS: [u32; 6] = [
+            GL_LIGHTING,
+            GL_DEPTH_TEST,
+            GL_BLEND,
+            GL_TEXTURE_2D,
+            GL_CULL_FACE,
+            GL_COLOR_MATERIAL,
+        ];
+        let mut out = [0u32; 6];
+        for (slot, flag) in FLAGS.iter().enumerate() {
+            // SAFETY: `glIsEnabled` — стандартная точка входа GL 1.1.
+            out[slot] = unsafe { (self.fns.is_enabled)(*flag) };
+        }
+        out
+    }
+
     /// Загружает `opengl32.dll` (если ещё не загружен) и резолвит функции.
     ///
     /// # Safety
@@ -181,6 +290,9 @@ impl Gl {
                     pop_matrix: resolve(module, c"glPopMatrix")?,
                     get_integerv: resolve(module, c"glGetIntegerv")?,
                     polygon_mode: resolve(module, c"glPolygonMode")?,
+                    is_enabled: resolve(module, c"glIsEnabled")?,
+                    disable_client_state: resolve(module, c"glDisableClientState")?,
+                    enable_client_state: resolve(module, c"glEnableClientState")?,
                 },
             })
         }
@@ -228,6 +340,11 @@ impl Gl {
         unsafe {
             (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
             (self.fns.disable)(GL_TEXTURE_2D);
+            // Без этого `glColor4f` на геометрию не действует: пока lighting
+            // включён, движок берёт материал, а он у него белый — линии
+            // выходят белыми вместо цвета команды.
+            (self.fns.disable)(GL_LIGHTING);
+            (self.fns.disable)(GL_COLOR_MATERIAL);
             match depth {
                 Depth::Test => (self.fns.enable)(GL_DEPTH_TEST),
                 Depth::Ignore => (self.fns.disable)(GL_DEPTH_TEST),
@@ -258,15 +375,46 @@ impl Gl {
     pub unsafe fn wireframe(&self, color: Color, width: f32, render: impl FnOnce()) {
         // SAFETY: контракт передан вызывающим.
         unsafe {
+            self.wireframe_style(WireStyle::new(color).width(width), render);
+        }
+    }
+
+    /// То же, что [`Gl::wireframe`], но оформление задаётся [`WireStyle`].
+    ///
+    /// # Safety
+    /// См. [`Gl::get`]; `render` должен рисовать только в текущем GL-контексте.
+    pub unsafe fn wireframe_style(&self, style: WireStyle, render: impl FnOnce()) {
+        // Движок задаёт цвет сам внутри рендера, поэтому одной `glColor4f`
+        // мало: подменяем его цвет до тех пор, пока рисуется наш контур.
+        crate::glcolor::install_once();
+        let Color { r, g, b, a } = style.color;
+        // SAFETY: контракт передан вызывающим.
+        unsafe {
             (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
             (self.fns.disable)(GL_TEXTURE_2D);
-            (self.fns.disable)(GL_DEPTH_TEST);
+            (self.fns.disable)(GL_LIGHTING);
+            (self.fns.disable)(GL_COLOR_MATERIAL);
+            // Цвет вершины из массива перебивает и `glColor`, и подмену
+            // таблицы — пока рисуем контур, массив цветов выключен. Клиентские
+            // состояния `push_attrib` не сохраняет, поэтому возвращаем сами.
+            let color_array = (self.fns.is_enabled)(GL_COLOR_ARRAY) != 0;
+            if color_array {
+                (self.fns.disable_client_state)(GL_COLOR_ARRAY);
+            }
+            if style.through_walls {
+                (self.fns.disable)(GL_DEPTH_TEST);
+            }
             (self.fns.enable)(GL_BLEND);
             (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             (self.fns.polygon_mode)(GL_FRONT_AND_BACK, GL_LINE);
-            (self.fns.line_width)(width.clamp(1.0, 10.0));
-            (self.fns.color4f)(color.r, color.g, color.b, color.a);
+            (self.fns.line_width)(style.width.clamp(1.0, 10.0));
+            (self.fns.color4f)(r, g, b, a);
+            crate::glcolor::begin(style.color);
             render();
+            crate::glcolor::end();
+            if color_array {
+                (self.fns.enable_client_state)(GL_COLOR_ARRAY);
+            }
             (self.fns.pop_attrib)();
         }
     }
@@ -307,6 +455,8 @@ impl Gl {
         unsafe {
             (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
             (self.fns.disable)(GL_TEXTURE_2D);
+            (self.fns.disable)(GL_LIGHTING);
+            (self.fns.disable)(GL_COLOR_MATERIAL);
             (self.fns.disable)(GL_DEPTH_TEST);
             (self.fns.enable)(GL_BLEND);
             (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -340,6 +490,8 @@ impl Gl {
         unsafe {
             (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
             (self.fns.disable)(GL_TEXTURE_2D);
+            (self.fns.disable)(GL_LIGHTING);
+            (self.fns.disable)(GL_COLOR_MATERIAL);
             (self.fns.disable)(GL_DEPTH_TEST);
             (self.fns.enable)(GL_BLEND);
             (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -355,6 +507,11 @@ impl Gl {
             (self.fns.matrix_mode)(GL_MODELVIEW);
             (self.fns.push_matrix)();
             (self.fns.load_identity)();
+            if crate::draw::probe::wanted() {
+                // SAFETY: состояние читается в том же контексте, что и рисование.
+                let enabled = self.probe_enabled();
+                crate::draw::probe::report(enabled);
+            }
 
             (self.fns.color4f)(color.r, color.g, color.b, color.a);
             (self.fns.begin)(GL_QUADS);

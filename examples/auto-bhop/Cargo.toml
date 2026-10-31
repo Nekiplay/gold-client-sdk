@@ -1,6 +1,6 @@
 [package]
-name = "example-scheduler"
-description = "Пример: отложенные консольные команды без блокировки кадра (очередь с дедлайнами из golden-std)."
+name = "example-auto-bhop"
+description = "Пример: автобанихоп с заблокированным пробелом — прыжок колесом в окно игры (golden-std)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

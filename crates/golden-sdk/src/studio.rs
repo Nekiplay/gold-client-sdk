@@ -16,6 +16,9 @@
 //! Layout'ы скомпилированы как `#[repr(C)]` со `static_assert`'ами на размер, так
 //! что расхождение с бинарником поймает компилятор, а не игра.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use core::ffi::c_void;
 use core::mem::size_of;
 

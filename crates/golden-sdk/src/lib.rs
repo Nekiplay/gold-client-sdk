@@ -17,6 +17,8 @@
 //! * [`log`] — лог в файл и в отладчик;
 //! * [`math`] — векторы и проекция мира на экран с правильным FOV GoldSrc;
 //! * [`hook`] — inline-хуки через `retour` и подмена интерфейса рендерера;
+//! * [`module`] — свой модуль: путь, `HMODULE`, `FreeLibraryAndExitThread`;
+//! * [`unload`] — реестр очисток и выгрузка DLL без перезапуска игры;
 //! * [`validate`] — самопроверка смещений после обновления игры.
 //!
 //! ## Пример: скелет модели, которую только что нарисовали
@@ -50,20 +52,34 @@
 //! раскрытия чужих игроков в мультиплеере, только модели локального игрока,
 //! боты в оффлайне, просмотр ассетов и инструменты.
 
+#![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_debug_implementations)]
 
+extern crate alloc;
+
+/// Тесты гоняются на хосте: им нужен `std` (печать, assert-сообщения).
+#[cfg(test)]
+extern crate std;
+
+pub mod concommand;
 pub mod draw;
 pub mod engine;
+pub mod glcolor;
 pub mod hook;
+pub mod host;
 pub mod log;
 pub mod math;
+pub mod module;
 pub mod offsets;
 pub mod player;
 pub mod process;
 pub mod renderer;
 pub mod state;
 pub mod studio;
+pub mod sync;
+pub mod time;
+pub mod unload;
 pub mod validate;
 
 pub use draw::Color;
@@ -76,8 +92,15 @@ pub use studio::{BoneMatrix, StudioBone, StudioHeader, StudioModel};
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {
-        $crate::log::line(format!($($arg)*))
+        $crate::log::line($crate::__private::format!($($arg)*))
     };
+}
+
+#[doc(hidden)]
+pub mod __private {
+    pub use alloc::format;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec::Vec;
 }
 
 /// Сборка, под которую проверены смещения из [`offsets`].
