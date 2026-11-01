@@ -145,7 +145,7 @@ crate::hook! {
     {
         if !text.is_null() {
             // SAFETY: консоль всегда отдаёт завершённую нулём строку.
-            if let Some(line) = unsafe { process::read_cstr(text as usize, 512) } {
+            if let Some(line) = process::read_cstr(text as usize, 512) {
                 if hidden_line(&line) {
                     return;
                 }

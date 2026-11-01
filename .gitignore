@@ -15,3 +15,6 @@
 dist/
 *.dll
 golden-commands.txt
+
+# Рабочие каталоги инструментов (magic-context и подобные)
+.cortexkit/

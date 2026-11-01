@@ -66,7 +66,9 @@ pub fn watch(path: PathBuf) {
                 // исполняться повторно при следующем запуске.
                 let _ = std::fs::remove_file(&path);
                 for line in text.lines() {
-                    let command = line.trim();
+                    // Файл мог быть записан с BOM (PowerShell `Set-Content`,
+                    // блокнот): без снятия BOM `!unload` не совпадёт ни с чем.
+                    let command = line.trim().trim_start_matches('\u{feff}').trim();
                     if command.is_empty() || command.starts_with('#') {
                         continue;
                     }

@@ -40,6 +40,13 @@ static CLEANUPS: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
 /// Выгрузка уже началась.
 static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Начата ли выгрузка с освобождением модуля.
+///
+/// Отдельный флаг от [`STARTED`]: `detach` и `unload` — разные вещи, и после
+/// снятия хуков (`unload_wallbang`) выгрузка по `!unload` обязана сработать.
+/// Общий флаг делал её невозможной — модуль оставался в памяти до перезапуска.
+static UNLOAD_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Регистрирует очистку, которая выполнится при выгрузке.
 ///
 /// Возвращает `false`, если выгрузка уже началась.
@@ -102,7 +109,9 @@ pub fn defer_detach() -> bool {
     std::thread::Builder::new()
         .name("golden-detach".to_string())
         .spawn(|| {
-            let _token = golden_sdk::module::ThreadToken::new();
+            // Поток снятия не должен ждать сам себя в `wait_threads`:
+            // иначе `detach` никогда не увидит `потоки вышли: true`.
+            drop(golden_sdk::module::ThreadToken::new());
             std::thread::sleep(std::time::Duration::from_millis(150));
             detach();
         })
@@ -154,7 +163,7 @@ pub fn detach() -> usize {
 /// Большая пауза нужна, если выгрузка запускается прямо из перехвата, который
 /// ещё исполняется на стеке игрового потока.
 pub fn unload_after(delay_ms: u32) -> bool {
-    if STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+    if UNLOAD_STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return false;
     }
     golden_sdk::log!("выгрузка: снимаем хуки и освобождаем модуль");
