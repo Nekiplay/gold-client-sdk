@@ -514,7 +514,7 @@ HookSetupModel.initialize(
 | `crates/golden-sdk/src/hook.rs` | `retour::RawDetour` и `SwappedInterface` |
 | `crates/golden-sdk/src/player.rs` | `g_PlayerExtraInfo`: ник, команда, счёт, флаги |
 | `crates/golden-std` | удобный слой: `Game`, `Player`, `Overlay` |
-| `examples/skeleton` | сам оверлей: хук отрисовки + рисование |
+| `examples/esp` | сам оверлей: хук отрисовки + рисование |
 | `examples/diagnostics` | проверка оффсетов в живой игре |
 
 ---

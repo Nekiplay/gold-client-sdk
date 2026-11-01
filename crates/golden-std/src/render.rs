@@ -18,6 +18,7 @@ use golden_sdk::renderer::StudioRenderer;
 use golden_sdk::studio::StudioModel;
 
 use crate::game::Game;
+use std::sync::Mutex;
 
 pub use golden_sdk::draw::Color;
 
@@ -285,6 +286,11 @@ impl Overlay {
         }
     }
 
+    /// Текст в экранных пикселях — для проверки отрисовки подписей.
+    pub fn text_at(&self, x: f32, y: f32, text: &str, color: Color, scale: f32) {
+        unsafe { self.gl.text(x, y, text, color, scale) }
+    }
+
     /// Подпись у мировой точки. `above` — над точкой, иначе под ней.
     pub fn label(&self, world: Vec3, text: &str, color: Color, above: bool) {
         let Some(pos) = self.project(world) else {
@@ -298,5 +304,75 @@ impl Overlay {
         };
         let x = pos.x - draw::text_width(text, scale) / 2.0;
         unsafe { self.gl.text(x, pos.y + offset, text, color, scale) }
+    }
+}
+/// Сколько подписей может копиться за кадр.
+const DEFERRED_LIMIT: usize = 256;
+
+/// Отложенная подпись: экранные координаты, посчитанные в момент отрисовки.
+struct Deferred {
+    x: f32,
+    y: f32,
+    text: String,
+    color: Color,
+    scale: f32,
+}
+
+static PENDING: Mutex<Vec<Deferred>> = Mutex::new(Vec::new());
+
+/// Отложить подпись до конца кадра.
+///
+/// Проекция считается сразу (камера в этом кадре уже известна), а сам текст
+/// рисуется в [`flush_labels`] перед сменой буферов. Иначе движок успевает
+/// нарисовать поверх подписи часть геометрии — ящики и прозрачные поверхности
+/// идут после моделей, и подпись оказывается под ними.
+pub fn defer_label(world: Vec3, text: &str, color: Color, above: bool) {
+    let Some(overlay) = Overlay::new() else {
+        return;
+    };
+    let Some(pos) = overlay.project(world) else {
+        return;
+    };
+    let scale = overlay.text_scale;
+    let offset = if above {
+        -(draw::text_height(scale) + 6.0)
+    } else {
+        8.0
+    };
+    let x = pos.x - draw::text_width(text, scale) / 2.0;
+    if let Ok(mut queue) = PENDING.lock() {
+        if queue.len() < DEFERRED_LIMIT {
+            queue.push(Deferred {
+                x,
+                y: pos.y + offset,
+                text: text.to_string(),
+                color,
+                scale,
+            });
+        }
+    }
+}
+
+/// Нарисовать все отложенные подписи и очистить очередь.
+///
+/// Вызывать из потока с активным GL-контекстом, когда кадр уже отрисован.
+pub fn flush_labels() {
+    let items = match PENDING.lock() {
+        Ok(mut queue) => std::mem::take(&mut *queue),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    if items.is_empty() {
+        return;
+    }
+    let Some(overlay) = Overlay::new() else {
+        return;
+    };
+    for item in items {
+        // SAFETY: вызывающий гарантирует активный GL-контекст.
+        unsafe {
+            overlay
+                .gl
+                .text(item.x, item.y, &item.text, item.color, item.scale)
+        }
     }
 }

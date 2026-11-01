@@ -1,5 +1,5 @@
 [package]
-name = "example-skeleton"
+name = "example-esp"
 description = "Пример: оверлей скелета моделей игроков (оффлайн/боты). Вся работа с движком — в golden-sdk."
 version.workspace = true
 edition.workspace = true

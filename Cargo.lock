@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-skeleton"
+name = "example-esp"
 version = "0.1.0"
 dependencies = [
  "golden-sdk",

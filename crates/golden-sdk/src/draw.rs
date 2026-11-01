@@ -40,6 +40,10 @@ const GL_SRC_ALPHA: u32 = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
 const GL_TEXTURE_2D: u32 = 0x0DE1;
 const GL_DEPTH_TEST: u32 = 0x0B71;
+/// `GL_ALWAYS`: фрагмент проходит проверку глубины всегда.
+const GL_ALWAYS: u32 = 0x0207;
+/// `GL_DEPTH_BUFFER_BIT`: только буфер глубины.
+const GL_DEPTH_BUFFER_BIT: u32 = 0x0000_0100;
 const GL_ALL_ATTRIB_BITS: u32 = 0x000F_FFFF;
 /// `GL_LIGHTING`: без этого `glColor4f` не влияет на геометрию — цвет пикселя
 /// считает освещение, и контур выходит цветом материала движка, а не нашим.
@@ -55,6 +59,11 @@ const GL_CULL_FACE: u32 = 0x0B44;
 /// берёт из этого массива, и `glColor*` в этот момент не действует. Отключаем
 /// массив на время своего прохода — тогда GL снова берёт текущий цвет.
 const GL_COLOR_ARRAY: u32 = 0x8076;
+/// `GL_VERTEX_ARRAY` - массив вершин: при включённом массиве `glVertex3f`
+/// игнорируется, и нарисовать нечего.
+const GL_VERTEX_ARRAY: u32 = 0x8074;
+/// `GL_TEXTURE_COORD_ARRAY` - массив текстурных координат.
+const GL_TEXTURE_COORD_ARRAY: u32 = 0x8078;
 /// `glPolygonMode` — какие грани и как рисовать.
 const GL_FRONT_AND_BACK: u32 = 0x0408;
 const GL_LINE: u32 = 0x1B01;
@@ -151,6 +160,12 @@ type PushMatrixFn = unsafe extern "system" fn();
 type GetIntegervFn = unsafe extern "system" fn(u32, *mut i32);
 type PolygonModeFn = unsafe extern "system" fn(u32, u32);
 type IsEnabledFn = unsafe extern "system" fn(u32) -> u32;
+/// `glDepthFunc(mode)`.
+type DepthFuncFn = unsafe extern "system" fn(u32);
+/// `glClear(mask)`.
+type ClearFn = unsafe extern "system" fn(u32);
+/// `glGetError` — код последней ошибки GL.
+type GetErrorFn = unsafe extern "system" fn() -> u32;
 
 /// Указатели на нужные функции `opengl32.dll`.
 #[derive(Debug)]
@@ -173,8 +188,11 @@ struct Fns {
     get_integerv: GetIntegervFn,
     polygon_mode: PolygonModeFn,
     is_enabled: IsEnabledFn,
+    get_error: GetErrorFn,
     disable_client_state: EnableFn,
     enable_client_state: EnableFn,
+    depth_func: DepthFuncFn,
+    clear: ClearFn,
 }
 
 /// Доступ к рисованию OpenGL.
@@ -291,6 +309,9 @@ impl Gl {
                     get_integerv: resolve(module, c"glGetIntegerv")?,
                     polygon_mode: resolve(module, c"glPolygonMode")?,
                     is_enabled: resolve(module, c"glIsEnabled")?,
+                    get_error: resolve(module, c"glGetError")?,
+        depth_func: resolve(module, c"glDepthFunc")?,
+        clear: resolve(module, c"glClear")?,
                     disable_client_state: resolve(module, c"glDisableClientState")?,
                     enable_client_state: resolve(module, c"glEnableClientState")?,
                 },
@@ -402,7 +423,12 @@ impl Gl {
                 (self.fns.disable_client_state)(GL_COLOR_ARRAY);
             }
             if style.through_walls {
+                // Движок включает проверку глубины сам, уже внутри своего
+                // рендера, поэтому `glDisable` до вызова не помогает: он же
+                // и перекрывает контур телом/ящиком. `GL_ALWAYS` переживает
+                // это включение, а `pop_attrib` возвращает прежнюю функцию.
                 (self.fns.disable)(GL_DEPTH_TEST);
+                (self.fns.depth_func)(GL_ALWAYS);
             }
             (self.fns.enable)(GL_BLEND);
             (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -417,6 +443,19 @@ impl Gl {
             }
             (self.fns.pop_attrib)();
         }
+    }
+
+    /// Очистить только буфер глубины.
+    ///
+    /// Нужно для отрисовки поверх уже собранного кадра: цвет не трогается,
+    /// поэтому картинка остаётся, а нарисованное после этого не отсекается
+    /// глубиной, которую записали мир и ящики.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`].
+    pub unsafe fn clear_depth(&self) {
+        // SAFETY: контракт передан вызывающим.
+        unsafe { (self.fns.clear)(GL_DEPTH_BUFFER_BIT) };
     }
 
     /// Размер вьюпорта `(x, y, width, height)` в пикселях.
@@ -486,6 +525,8 @@ impl Gl {
             return;
         };
         let scale = scale.max(0.5);
+        let mut quads = 0u32;
+        let before = unsafe { (self.fns.get_error)() };
         // SAFETY: контракт передан вызывающим.
         unsafe {
             (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
@@ -495,6 +536,13 @@ impl Gl {
             (self.fns.disable)(GL_DEPTH_TEST);
             (self.fns.enable)(GL_BLEND);
             (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            // Движок во время отрисовки моделей держит включёнными клиентские
+            // массивы: при `GL_COLOR_ARRAY` цвет берётся из чужого массива, при
+            // `GL_VERTEX_ARRAY` наши `glVertex3f` вообще игнорируются. Без этого
+            // подписи не видны, хотя контур (он массивы выключает) рисуется.
+            (self.fns.disable_client_state)(GL_COLOR_ARRAY);
+            (self.fns.disable_client_state)(GL_VERTEX_ARRAY);
+            (self.fns.disable_client_state)(GL_TEXTURE_COORD_ARRAY);
 
             (self.fns.matrix_mode)(GL_PROJECTION);
             (self.fns.push_matrix)();
@@ -532,12 +580,31 @@ impl Gl {
                         let py = y + vy + row as f32 * scale;
                         (self.fns.vertex3f)(px, py, 0.0);
                         (self.fns.vertex3f)(px + scale, py, 0.0);
+                        quads += 1;
                         (self.fns.vertex3f)(px + scale, py + scale, 0.0);
                         (self.fns.vertex3f)(px, py + scale, 0.0);
                     }
                 }
             }
             (self.fns.end)();
+            let after = (self.fns.get_error)();
+            {
+                static TEXT_DRAWS: core::sync::atomic::AtomicU32 =
+                    core::sync::atomic::AtomicU32::new(0);
+                if TEXT_DRAWS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 3 {
+                    crate::log!(
+                        "текст: вьюпорт {}x{} в точке ({}, {}), масштаб {:.2}, квадов {}, GL {} -> {}",
+                        vw,
+                        vh,
+                        vx,
+                        vy,
+                        scale,
+                        quads,
+                        before,
+                        after
+                    );
+                }
+            }
 
             (self.fns.matrix_mode)(GL_MODELVIEW);
             (self.fns.pop_matrix)();

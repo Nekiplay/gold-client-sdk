@@ -100,7 +100,7 @@ golden_std::unload::defer_unload(300);
 
 | Пример | Что показывает |
 |---|---|
-| `examples/skeleton` | Контур модели и подписи (имя, оружие) по команде игрока; команды `gc_status`, `unload_esp`. |
+| `examples/esp` | Контур модели и подписи (имя, оружие) по команде игрока; команды `unload_esp`, `unload_esp`. |
 | `examples/auto-bhop` | Автопрыжок без потери скорости: инъекция колеса мыши в окно игры. |
 | `examples/model-viewer` | Разбор и просмотр studio-моделей. |
 | `examples/diagnostics` | Счётчики и проверки состояния движка. |
@@ -112,7 +112,7 @@ golden_std::unload::defer_unload(300);
 
 ```powershell
 target\i686-pc-windows-msvc\release\golden-stand.exe run `
-    target\i686-pc-windows-msvc\release\example_skeleton.dll `
+    target\i686-pc-windows-msvc\release\example_esp.dll `
     --map de_dust2 --bots 3 --seconds 120 --needle "скелетов" `
     --console "jointeam 2" --console "joinclass 1" --keep
 ```

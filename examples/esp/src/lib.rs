@@ -1,4 +1,4 @@
-//! # example-skeleton
+//! # example-esp
 //!
 //! Оверлей скелета: рисует линии по костям моделей игроков, которые движок
 //! рисует в этом кадре.
@@ -58,7 +58,7 @@ pub extern "system" fn DllMain(module: *mut c_void, reason: u32, _reserved: *mut
         golden_sdk::log::init(golden_sdk::log::path_next_to(module));
         // Работа в отдельном потоке: в DllMain нельзя блокировать загрузчик.
         let _ = std::thread::Builder::new()
-            .name("example-skeleton".to_string())
+            .name("example-esp".to_string())
             .spawn(bootstrap);
     }
     1
@@ -68,7 +68,7 @@ pub extern "system" fn DllMain(module: *mut c_void, reason: u32, _reserved: *mut
 fn bootstrap() {
     // Поток принадлежит DLL: при выгрузке он должен выйти первым.
     let mut token = Some(golden_sdk::module::ThreadToken::new());
-    golden_sdk::log!("example-skeleton {} запускается", env!("CARGO_PKG_VERSION"));
+    golden_sdk::log!("example-esp {} запускается", env!("CARGO_PKG_VERSION"));
     golden_sdk::log!("сборка смещений: {}", golden_sdk::BUILD);
 
     if !wait_for_modules(MODULE_WAIT) {
