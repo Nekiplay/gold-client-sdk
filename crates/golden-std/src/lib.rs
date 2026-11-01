@@ -44,6 +44,7 @@ pub mod pose;
 pub mod render;
 pub mod schedule;
 pub mod unload;
+pub mod wallbang;
 
 pub use game::{Entity, Game, Player, Players, State, View, MAX_PLAYERS};
 pub use golden_sdk::math::{Camera, Fov, ScreenPos, Vec3};

@@ -63,6 +63,38 @@ pub mod hw {
     /// `engine_studio_api_t::GetCurrentEntity`).
     pub const P_CURRENT_ENTITY: usize = 0x78_E470;
 
+    /// `cl_entity_t **g_pRenderEntities` — массив крупных «рендер-сущностей»
+    /// (`0xBC4` байта на элемент), с которыми работают рендерер и трассировка.
+    ///
+    /// Адрес взят из `SV_HullForEntity` (`0x100507C0`): перед вызовом
+    /// построителя хитбоксов движок считает
+    /// `ECX = [0x10442880] + entity_index * 0xBC4`.
+    pub const P_RENDER_ENTITIES: usize = 0x44_2880;
+
+    /// Шаг элемента [`P_RENDER_ENTITIES`].
+    pub const RENDER_ENTITY_STRIDE: usize = 0xBC4;
+
+    /// `matrix3x4 *g_boneTransform` — буфер матриц костей (128 по 12 float),
+    /// по которому движок строит хитбоксы для трассировки выстрела.
+    ///
+    /// Пишут его `R_StudioSetupBones` (`0x10091580`), `SV_StudioSetupBones`
+    /// (`0x10092C10`) и `0x100950B0`; читает построитель хитбоксов
+    /// ([`STUDIO_TRACE_HITBOXES`]). Рядом лежат ещё два буфера по `0x1800`:
+    /// `0x129F1258` и `0x129F4258`.
+    ///
+    /// Здесь смещение от базы модуля; в Ghidra тот же буфер — `0x129F2A58`.
+    pub const TRACE_BONES: usize = 0x29F_2A58;
+
+    /// `int StudioHitboxesForTrace(cl_entity_t *, const float *offset,
+    /// int *count, int skip_gear)` — строит хитбоксы по матрицам костей.
+    ///
+    /// Перебирает `numhitboxes` записей по `0x20` байт, для каждой берёт
+    /// `bbmin`/`bbmax` в системе кости и переводит их матрицей из
+    /// [`TRACE_BONES`]. При `skip_gear != 0` пропускает запись с номером
+    /// `0x14` (бокс оружия в руках). Первые два аргумента передаются в
+    /// `ECX`/`EDX`, остальные — в стеке; чистит стек вызывающий.
+    pub const STUDIO_TRACE_HITBOXES: usize = 0x92_930;
+
     /// `int cl_parsecount` — слот `GetParsecountPtr`.
     pub const PARSECOUNT: usize = 0xF8_FE30;
 
@@ -136,9 +168,24 @@ pub mod hw {
     /// `void StudioSetupLighting(...)` — слот api `+0x58`.
     pub const STUDIO_SETUP_LIGHTING: usize = 0x99_560;
 
-    /// `void SV_StudioSetupBones(...)` — серверная копия расчёта костей: удобный
-    /// эталон, когда нужно сверить математику.
-    pub const SV_STUDIO_SETUP_BONES: usize = 0x92_C70;
+    /// `void SV_StudioSetupBones(model_t *model, float frame, int sequence,
+    /// const float angles[3], const float origin[3], float boneadj[8],
+    /// const unsigned char controllers[4], int bone)` — серверный расчёт
+    /// костей.
+    ///
+    /// Обычный `cdecl`: пролог `PUSH EBP / MOV EBP,ESP / SUB ESP,0x250`,
+    /// аргументы в стеке. Заголовок модели берётся не из аргумента, а из
+    /// [`STUDIO_HEADER_CACHE`], поэтому вызывающий обязан его выставить.
+    /// `bone = -1` — посчитать все кости. Матрицы ложатся в
+    /// [`TRACE_BONES`].
+    pub const SV_STUDIO_SETUP_BONES: usize = 0x92_C10;
+
+    /// `studiohdr_t *g_pStudioHeaderCache` — заголовок модели, с которым
+    /// работает [`SV_STUDIO_SETUP_BONES`].
+    ///
+    /// Заполняет `SV_HullForStudioModel`: `model_t->cache.data`, то есть
+    /// поле `+0x184` модели ([`super::model::EXTRADATA`]).
+    pub const STUDIO_HEADER_CACHE: usize = 0x29F_4888;
 
     // --- состояние мира ---
 
@@ -618,6 +665,33 @@ pub mod player_info {
     /// через `Mod_ForIndex` и рисует вторым проходом. Это и есть то оружие,
     /// которое видно в руках.
     pub const WEAPON_MODEL: usize = 0xB4;
+}
+
+/// Состояние анимации в записи, которую движок отдаёт в `StudioDrawPlayer`.
+///
+/// Начало записи совпадает с `entity_state_t`: `entityType`, `number`,
+/// `msg_time`, `messageNum`, затем позиция. Смещения сверены дампом живой
+/// записи в игре (позиция, углы, номер последовательности и кадр совпали с
+/// тем, что показывает движок).
+pub mod player_state {
+    /// ✔ Позиция тела в мире (`+0x10`).
+    pub const ORIGIN: usize = 0x10;
+
+    /// ✔ Углы поворота тела в градусах (`+0x1C`).
+    pub const ANGLES: usize = 0x1C;
+
+    /// ✔ Номер последовательности анимации (`+0x2C`).
+    pub const SEQUENCE: usize = 0x2C;
+
+    /// ✔ Кадр анимации вместе с дробной частью (`+0x30`).
+    pub const FRAME: usize = 0x30;
+
+    /// Контроллеры костей — четыре байта (`+0x48`).
+    ///
+    /// В `entity_state_t` это `byte controller[4]`: по ним считается поправка
+    /// позы (наклон корпуса и головы при прицеливании). Сверены не были:
+    /// значения в дампе нужно проверить глазами.
+    pub const CONTROLLERS: usize = 0x48;
 }
 
 /// Массив состояний сущностей (`GetEntityState`) — сетевые данные движка.

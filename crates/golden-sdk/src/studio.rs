@@ -184,16 +184,27 @@ pub struct WorldHitbox {
     pub group: HitGroup,
     /// Кость, к которой привязан хитбокс.
     pub bone: usize,
-    /// Мировой AABB.
+    /// Мировой AABB: годится для меток, но не для попадания — у повёрнутого
+    /// хитбокса он заметно больше настоящего объёма.
     pub min: Vec3,
     /// Мировой AABB.
     pub max: Vec3,
+    /// Матрица кости: переводит локальные границы в мир.
+    pub matrix: BoneMatrix,
+    /// Границы хитбокса в системе координат кости (`bbmin`).
+    pub local_min: Vec3,
+    /// Границы хитбокса в системе координат кости (`bbmax`).
+    pub local_max: Vec3,
 }
 
 impl WorldHitbox {
     /// Центр объёма — то, вокруг чего рисуется метка.
+    ///
+    /// Считается через матрицу кости: центр AABB у повёрнутого хитбокса
+    /// смещён от настоящего.
     pub fn center(&self) -> Vec3 {
-        (self.min + self.max) * 0.5
+        self.matrix
+            .transform_point((self.local_min + self.local_max) * 0.5)
     }
 
     /// Верхняя точка по мировому Z.
@@ -205,6 +216,79 @@ impl WorldHitbox {
     /// Размеры объёма.
     pub fn size(&self) -> Vec3 {
         self.max - self.min
+    }
+
+    /// 12 рёбер настоящего (повёрнутого вместе с костью) объёма.
+    ///
+    /// Углы берутся в системе кости и переводятся её матрицей — рисовать надо
+    /// именно их: AABB [`Self::min`]/[`Self::max`] у повёрнутого хитбокса шире
+    /// настоящего объёма и на экране выглядит больше тела.
+    pub fn edges(&self) -> [(Vec3, Vec3); 12] {
+        let (a, b) = (self.local_min, self.local_max);
+        let corners = [
+            Vec3::new(a.x, a.y, a.z),
+            Vec3::new(b.x, a.y, a.z),
+            Vec3::new(a.x, b.y, a.z),
+            Vec3::new(b.x, b.y, a.z),
+            Vec3::new(a.x, a.y, b.z),
+            Vec3::new(b.x, a.y, b.z),
+            Vec3::new(a.x, b.y, b.z),
+            Vec3::new(b.x, b.y, b.z),
+        ]
+        .map(|point| self.matrix.transform_point(point));
+        const PAIRS: [(usize, usize); 12] = [
+            (0, 1),
+            (0, 2),
+            (1, 3),
+            (2, 3),
+            (4, 5),
+            (4, 6),
+            (5, 7),
+            (6, 7),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ];
+        PAIRS.map(|(first, second)| (corners[first], corners[second]))
+    }
+
+    /// Точное пересечение луча с хитбоксом: расстояние до входа.
+    ///
+    /// Луч переводится в систему координат кости (где хитбокс — обычный
+    /// параллелепипед), проверяется методом плит и возвращается обратно. Так
+    /// попадание считается по настоящему, повёрнутому вместе с костью объёму,
+    /// а не по раздутому AABB.
+    pub fn ray(&self, origin: Vec3, direction: Vec3) -> Option<f32> {
+        let local_origin = self.matrix.untransform_point(origin);
+        let local_direction = self.matrix.untransform_direction(direction);
+        let start = [local_origin.x, local_origin.y, local_origin.z];
+        let step = [local_direction.x, local_direction.y, local_direction.z];
+        let low = [self.local_min.x, self.local_min.y, self.local_min.z];
+        let high = [self.local_max.x, self.local_max.y, self.local_max.z];
+        let mut near = f32::NEG_INFINITY;
+        let mut far = f32::INFINITY;
+        for axis in 0..3 {
+            if step[axis].abs() < 1e-6 {
+                if start[axis] < low[axis] || start[axis] > high[axis] {
+                    return None;
+                }
+                continue;
+            }
+            let first = (low[axis] - start[axis]) / step[axis];
+            let second = (high[axis] - start[axis]) / step[axis];
+            let (nearer, farther) = if first < second {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            near = near.max(nearer);
+            far = far.min(farther);
+            if near > far {
+                return None;
+            }
+        }
+        (far >= 0.0).then(|| near.max(0.0))
     }
 }
 
@@ -713,6 +797,30 @@ impl BoneMatrix {
 
     pub fn is_finite(&self) -> bool {
         self.m.iter().all(|v| v.is_finite())
+    }
+
+    /// Преобразует точку из мира в систему координат кости: `R^T * (p - T)`.
+    ///
+    /// Поворот ортонормированный (без масштаба), поэтому обратный — просто
+    /// транспонированный.
+    pub fn untransform_point(&self, point: Vec3) -> Vec3 {
+        let dx = point.x - self.m[3];
+        let dy = point.y - self.m[7];
+        let dz = point.z - self.m[11];
+        Vec3::new(
+            self.m[0] * dx + self.m[4] * dy + self.m[8] * dz,
+            self.m[1] * dx + self.m[5] * dy + self.m[9] * dz,
+            self.m[2] * dx + self.m[6] * dy + self.m[10] * dz,
+        )
+    }
+
+    /// Преобразует направление из мира в систему координат кости (`R^T * d`).
+    pub fn untransform_direction(&self, direction: Vec3) -> Vec3 {
+        Vec3::new(
+            self.m[0] * direction.x + self.m[4] * direction.y + self.m[8] * direction.z,
+            self.m[1] * direction.x + self.m[5] * direction.y + self.m[9] * direction.z,
+            self.m[2] * direction.x + self.m[6] * direction.y + self.m[10] * direction.z,
+        )
     }
 }
 

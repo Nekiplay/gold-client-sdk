@@ -44,6 +44,7 @@ type ThiscallVoid = unsafe extern "C" fn(*mut c_void);
 
 /// Интерфейс рендерера, который клиент отдаёт движку (`r_studio_interface_t`).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct StudioInterface {
     /// Движок принимает только `1`.
     pub version: i32,
@@ -306,6 +307,21 @@ impl StudioRenderer {
         (!ptr.is_null()).then_some(ptr)
     }
 
+    /// Матрицы костей, по которым движок считает попадание выстрела.
+    ///
+    /// Трассировка берёт не клиентский `m_pbonetransform`, а буфер движка
+    /// ([`hw::TRACE_BONES`]): его заполняет `R_StudioSetupBones` перед отрисовкой
+    /// модели. Читать так же — сразу после отрисовки, пока там поза этой модели.
+    pub fn trace_bones() -> Option<*const BoneMatrix> {
+        let base = process::hw_base()?;
+        let start = base + hw::TRACE_BONES;
+        // Буфер должен целиком лежать в отображённой памяти: если смещение
+        // посчитано не от базы модуля, адрес уйдёт в пустоту, и чтение матриц
+        // уронит игру. Проверяем границы обоих концов.
+        let end = start + MAXSTUDIOBONES * core::mem::size_of::<BoneMatrix>() - 1;
+        (process::is_readable(start) && process::is_readable(end)).then_some(start as *const BoneMatrix)
+    }
+
     /// Позиция кости в мире, если кость есть в модели.
     pub fn bone_origin(&self, bone: usize) -> Option<Vec3> {
         let model = self.studio_model()?;
@@ -504,13 +520,28 @@ impl StudioRenderer {
     ///
     /// Порядок тот же, что в модели; группы — [`HitGroup`].
     pub fn hitboxes_world(&self, model: &StudioModel) -> Vec<WorldHitbox> {
+        match self.bone_matrix_base() {
+            Some(base) => self.hitboxes_world_from(model, base),
+            None => Vec::new(),
+        }
+    }
+
+    /// То же, но матрицы костей берутся из указанного буфера.
+    ///
+    /// Нужно, чтобы пересчитать хитбоксы по буферу движка
+    /// ([`Self::trace_bones`]) — по нему считает попадание трассировка.
+    pub fn hitboxes_world_from(&self, model: &StudioModel, base: *const BoneMatrix) -> Vec<WorldHitbox> {
         let bones = model.bones().len();
-        let Some(base) = self.bone_matrix_base() else {
-            return Vec::new();
-        };
+        // Движок пропускает бокс оружия в руках: в `hw.dll+0x92930` перебор идёт
+        // с условием `local_20 != 0x14`. Но на кастомных моделях номер бокса
+        // другой, поэтому узнаём его по группе 8 (gear): она у моделей игроков
+        // принадлежит только боксу оружия, а он огромный (`56x39x30` у `gign.mdl`)
+        // и иначе накрывает руки и корпус.
+        const GEAR_GROUP: i32 = 8;
         model
             .hitboxes()
             .iter()
+            .filter(|hitbox| hitbox.group != GEAR_GROUP)
             .filter_map(|hitbox| {
                 let bone = hitbox.bone;
                 if bone < 0 || bone as usize >= bones {
@@ -524,6 +555,9 @@ impl StudioRenderer {
                     bone: bone as usize,
                     min,
                     max,
+                    matrix: m,
+                    local_min: hitbox.bbmin,
+                    local_max: hitbox.bbmax,
                 })
             })
             .collect()

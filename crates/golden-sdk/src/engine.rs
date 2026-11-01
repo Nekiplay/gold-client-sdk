@@ -70,6 +70,19 @@ impl EntityRef {
         unsafe { process::read(self.addr() + crate::offsets::entity::MODEL) }
     }
 
+    /// Путь модели из `model_t` — для любых моделей, включая brush-модели мира.
+    ///
+    /// `model_t` начинается с `char name[64]`, поэтому имя читается прямо, без
+    /// studio-заголовка: у brush-модели его нет.
+    pub fn model_path(&self) -> Option<String> {
+        let model = self.model();
+        if model.is_null() {
+            return None;
+        }
+        // SAFETY: `model_t` — объект движка; читаем первые 64 байта имени.
+        process::read_cstr(model as usize, 64)
+    }
+
     /// Тип/состояние модели (17 — удалённый игрок, 12 — смена скина).
     pub fn model_state(&self) -> i32 {
         // SAFETY: указатель проверен при создании.
@@ -364,12 +377,22 @@ impl EngineStudioApi {
     pub const MAX_EDICTS: i32 = 64;
 
     /// Время клиента и индекс сущности.
+    ///
+    /// Движок (`hw.dll + 0x9CF80`) пишет `int` и **два `double`**: в
+    /// `cl_time`/`cl_oldtime` лежат 8-байтные значения. Объявить их `f32` —
+    /// значит дать движку затереть стек вызывающего: падает не здесь, а позже,
+    /// в чужом коде. Поэтому наружу отдаём `f32`, а принимаем `f64`.
     pub fn times(&self) -> Option<Times> {
-        let f: unsafe extern "C" fn(*mut i32, *mut f32, *mut f32) = self.func(api::GET_TIMES)?;
-        let mut t = Times::default();
-        // SAFETY: сигнатура слота, передаём валидные указатели на локальные.
-        unsafe { f(&mut t.view_entity, &mut t.time, &mut t.old_time) };
-        Some(t)
+        let f: unsafe extern "C" fn(*mut i32, *mut f64, *mut f64) = self.func(api::GET_TIMES)?;
+        let mut view_entity = 0i32;
+        let (mut time, mut old_time) = (0.0f64, 0.0f64);
+        // SAFETY: сигнатура слота `GetTimes(int *, double *, double *)`.
+        unsafe { f(&mut view_entity, &mut time, &mut old_time) };
+        Some(Times {
+            view_entity,
+            time: time as f32,
+            old_time: old_time as f32,
+        })
     }
 
     /// Базис камеры: `(origin, up, right, forward)`.
@@ -417,6 +440,17 @@ impl EngineStudioApi {
         // SAFETY: сигнатура слота; неверный индекс движок отсекает сам.
         let ptr = unsafe { f(index) };
         (!ptr.is_null()).then_some(ptr)
+    }
+
+    /// Путь модели по индексу (`maps/de_dust2.bsp`, `*3`, ...).
+    ///
+    /// В отличие от [`Self::model_name_by_index`], работает для brush-моделей:
+    /// имя берётся не из studio-заголовка, а из начала `model_t`. Мир в GoldSrc
+    /// прекешируется первым, его индекс — 1.
+    pub fn model_path_by_index(&self, index: i32) -> Option<String> {
+        let model = self.model_by_index(index)?;
+        // SAFETY: `model_t` начинается с `char name[64]`.
+        process::read_cstr(model as usize, 64)
     }
 
     /// Имя модели по индексу (`terror\terror.mdl`, `v_m4a1.mdl`, ...).

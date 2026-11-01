@@ -7,6 +7,8 @@ use golden_sdk::engine::{EngineStudioApi, EntityRef};
 use golden_sdk::math::{Camera, Vec3};
 use golden_sdk::player::{self, PlayerExtra, Team};
 use golden_sdk::studio::StudioModel;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// Точка входа в игру.
 ///
@@ -68,8 +70,17 @@ impl Game {
     }
 
     /// Номер сущности, из которой смотрит камера.
+    ///
+    /// Берётся из `ref_params.viewentity`, который движок заполняет каждый кадр.
+    /// `GetTimes().view_entity` для этого не годится: в Gold Client первый слот
+    /// `GetTimes` отдаёт не номер сущности (в живой игре приходило значение
+    /// вроде 20337 — похоже на время, а не на индекс).
     pub fn view_entity(&self) -> Option<i32> {
-        Some(self.api.times()?.view_entity)
+        let index = golden_sdk::state::EngineState::view_entity();
+        // Больше `MAX_EDICTS` — камера свободного наблюдателя: игрока за ней нет.
+        (0..=EngineStudioApi::MAX_EDICTS)
+            .contains(&index)
+            .then_some(index)
     }
 
     /// Камера кадра: позиция, направление и базис.
@@ -180,6 +191,14 @@ impl Entity {
         self.studio_model().is_some_and(|model| model.is_player_model())
     }
 
+    /// Путь модели из `model_t`: `maps/de_dust2.bsp`, `*3` у brush-модели.
+    ///
+    /// Работает и там, где [`Self::model_name`] пуст: у brush-моделей нет
+    /// studio-заголовка, и имя есть только в `model_t`.
+    pub fn model_path(&self) -> Option<String> {
+        self.raw.model_path()
+    }
+
     /// Низкоуровневый доступ — через `golden_sdk`, если чего-то не хватает.
     pub fn raw(&self) -> EntityRef {
         self.raw
@@ -188,6 +207,34 @@ impl Entity {
 
 /// Сколько слотов игроков ведёт клиент (`g_PlayerExtraInfo`).
 pub const MAX_PLAYERS: i32 = 63;
+
+/// Модели оружия в руках, снятые в перехвате отрисовки: слот → номер модели.
+///
+/// Оружие известно движку только в момент, когда он рисует игрока
+/// (`player_info` очередного `StudioDrawPlayer`). Вне отрисовки брать его
+/// неоткуда, поэтому запоминаем снятое.
+static HELD_WEAPONS: Mutex<Option<HashMap<i32, i32>>> = Mutex::new(None);
+
+/// Запоминает модель оружия в руках игрока.
+///
+/// Вызывать из перехвата `StudioDrawPlayer` с номером модели из `player_info`.
+pub fn remember_weapon(index: i32, weapon: i32) {
+    if !(0..MAX_PLAYERS).contains(&index) || weapon == 0 {
+        return;
+    }
+    let Ok(mut cache) = HELD_WEAPONS.lock() else {
+        return;
+    };
+    cache.get_or_insert_with(HashMap::new).insert(index, weapon);
+}
+
+/// Модель оружия в руках, снятая при отрисовке.
+pub fn weapon_in_hand(index: i32) -> Option<i32> {
+    HELD_WEAPONS
+        .lock()
+        .ok()
+        .and_then(|cache| cache.as_ref().and_then(|map| map.get(&index).copied()))
+}
 
 /// Обход всех игроков: [`Game::get_players`].
 ///
@@ -385,10 +432,13 @@ impl Player {
     /// Оружие в руках, как его называет игра: `AK-47`, `Knife`.
     ///
     /// Источник — модель оружия из `player_info` (её движок и рисует), с
-    /// запасным вариантом в виде поля сущности.
+    /// запасным вариантом в виде поля сущности. Для игроков, которых движок уже
+    /// нарисовал, работает [`remember_weapon`]: тяжёлая сущность рендера живёт
+    /// только на время отрисовки, и без запоминания оружие брать неоткуда.
     pub fn weapon(&self) -> Option<String> {
         let index = self
             .weapon_model
+            .or_else(|| weapon_in_hand(self.index()))
             .or_else(|| self.entity.map(|entity| entity.raw().weapon_model_index()))?;
         let api = EngineStudioApi::for_engine()?;
         let model = api.model_name_by_index(index)?;

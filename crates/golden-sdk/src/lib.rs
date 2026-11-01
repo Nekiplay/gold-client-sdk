@@ -16,6 +16,8 @@
 //! * [`player`] — команда игрока и проверка «это модель игрока»;
 //! * [`log`] — лог в файл и в отладчик;
 //! * [`math`] — векторы и проекция мира на экран с правильным FOV GoldSrc;
+//! * [`bsp`] — геометрия карты: разбор `.bsp` и трассировка луча;
+//! * [`ballistics`] — пробитие стен и урон: `FireBullets3` из `mp.dll`;
 //! * [`hook`] — inline-хуки через `retour` и подмена интерфейса рендерера;
 //! * [`module`] — свой модуль: путь, `HMODULE`, `FreeLibraryAndExitThread`;
 //! * [`unload`] — реестр очисток и выгрузка DLL без перезапуска игры;
@@ -62,6 +64,8 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod ballistics;
+pub mod bsp;
 pub mod concommand;
 pub mod console;
 pub mod draw;
@@ -76,6 +80,7 @@ pub mod offsets;
 pub mod player;
 pub mod process;
 pub mod renderer;
+pub mod server_pose;
 pub mod state;
 pub mod studio;
 pub mod sync;
