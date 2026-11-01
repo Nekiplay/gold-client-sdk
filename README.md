@@ -13,7 +13,7 @@ SDK для разработки модов под [Gold Client](https://goldclie
 | Крейт | std | Зачем |
 |---|---|---|
 | `crates/golden-sdk` | **нет** (`#![no_std]` + `alloc`) | Всё, что нужно от игры: адреса и смещения, чтение/запись памяти, сущности, разбор `.mdl`, интерфейс studio-рендерера, OpenGL, хуки (`retour`), консольные команды, лог, Win32 вызовы напрямую. |
-| `crates/golden-std` | да | Удобный слой поверх SDK: `Overlay` (контур и подписи игроков), позы и кэш поз, реестр хуков с автоматическим снятием, реестр консольных команд, блокировка клавиш, планировщик по кадрам, запуск игры с ботами, выгрузка DLL. |
+| `crates/golden-std` | да | Удобный слой поверх SDK: **`esp` (готовый ESP одной строкой)**, `Overlay` (контур и подписи игроков), позы и кэш поз, реестр хуков с автоматическим снятием, реестр консольных команд, блокировка клавиш, планировщик по кадрам, запуск игры с ботами, выгрузка DLL. |
 
 SDK намеренно не тянет `std`: его можно собирать и использовать там, где `std`
 недоступен, а всё системное сделано прямыми вызовами Win32 (`GetTickCount64`,
@@ -61,7 +61,36 @@ golden_std::hook! {
 unsafe { hooks::install(target_address, on_setup_bones as *const ()) }.ok();
 ```
 
-Контур и подписи:
+## ESP одной строкой
+
+Готовый ESP живёт в `golden_std::esp`: контур модели и подписи, видимые сквозь
+любую геометрию. Пример настраивает только то, чем один ESP отличается от другого.
+
+```rust
+use golden_sdk::player::Team;
+use golden_std::{Color, Player};
+
+golden_std::esp::Esp::new()
+    .width(2.0)
+    .color(|player: &Player| player.team().map_or(Color::WHITE, Team::color))
+    .label(|player: &Player| (Some(player.name()), player.weapon()))
+    .install()?;
+```
+
+* `color` — цвет контура и подписей, по умолчанию цвет команды;
+* `label` — первая строка над головой, вторая под ногами;
+* `width` — толщина линий.
+
+Внутри: подмена слотов интерфейса клиента, перехват `StudioRenderModel`
+(подписи ставятся там, где кости принадлежат рисуемой модели), перехват конца
+3D-сцены (`HUD_DrawNormalTriangles`), где и обводка, и подписи рисуются уже
+поверх мира, ящиков и контейнеров, и отложенная перерисовка модели движком с
+подстановкой «текущей сущности».
+
+Счётчики для проверки в игре — `golden_std::esp::drawn()` и
+`golden_std::esp::labels()`.
+
+Контур и подписи вручную, если нужен свой порядок отрисовки:
 
 ```rust
 let overlay = Overlay::new();
@@ -100,7 +129,7 @@ golden_std::unload::defer_unload(300);
 
 | Пример | Что показывает |
 |---|---|
-| `examples/esp` | Контур модели и подписи (имя, оружие) по команде игрока; команды `unload_esp`, `unload_esp`. |
+| `examples/esp` | ESP: контур модели и подписи (имя, оружие) по команде игрока, видно сквозь стены; всё настраивается через `golden_std::esp::Esp`. |
 | `examples/auto-bhop` | Автопрыжок без потери скорости: инъекция колеса мыши в окно игры. |
 | `examples/model-viewer` | Разбор и просмотр studio-моделей. |
 | `examples/diagnostics` | Счётчики и проверки состояния движка. |
@@ -113,7 +142,7 @@ golden_std::unload::defer_unload(300);
 ```powershell
 target\i686-pc-windows-msvc\release\golden-stand.exe run `
     target\i686-pc-windows-msvc\release\example_esp.dll `
-    --map de_dust2 --bots 3 --seconds 120 --needle "скелетов" `
+    --map de_dust2 --bots 3 --seconds 120 --needle "esp: моделей" `
     --console "jointeam 2" --console "joinclass 1" --keep
 ```
 
@@ -129,6 +158,12 @@ target\i686-pc-windows-msvc\release\golden-inject.exe <pid hl.exe> <путь к 
 `HUD_GetStudioModelInterface`, таблица `engine_studio_api_t`, layout объекта
 `CStudioModelRenderer` и его vtable, адреса `Mod_*`/`R_Studio*`, формат `.mdl`,
 рецепты хуков.
+
+## Для агентов
+
+`AGENTS.md` — раскладка репозитория, правила сборки и проверки в живой игре,
+проверенные грабли движка. В `skills/` лежат рабочие инструкции: разбор движка
+(Ghidra/IDA), автоматизация игры и скриншоты, общий цикл моддинга.
 
 ## Область применения
 

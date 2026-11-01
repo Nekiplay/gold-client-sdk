@@ -4,10 +4,12 @@
 //! и тексты:
 //!
 //! ```no_run
+//! # fn main() -> Result<(), String> {
 //! golden_std::esp::Esp::new()
 //!     .width(2.0)
-//!     .label(|player| (Some(player.name()), player.weapon()))
-//!     .install()?;
+//!     .label(|player: &golden_std::Player| (Some(player.name()), player.weapon()))
+//!     .install()
+//! # }
 //! ```
 //!
 //! Почему так сложно внутри: движок рисует brush-модели (ящики, контейнеры) в
