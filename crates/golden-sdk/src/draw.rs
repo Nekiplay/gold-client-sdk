@@ -51,6 +51,20 @@ const GL_LEQUAL: u32 = 0x0203;
 /// `GL_DEPTH_BUFFER_BIT`: только буфер глубины.
 const GL_DEPTH_BUFFER_BIT: u32 = 0x0000_0100;
 const GL_ALL_ATTRIB_BITS: u32 = 0x000F_FFFF;
+/// Что сохраняем вокруг своего прохода.
+///
+/// Намеренно **без** `GL_TEXTURE_BIT`: движок держит у себя кэш привязанной
+/// текстуры и сам решает, когда её перепривязывать. Внутри нашего прохода он
+/// привязывает текстуры модели, а `glPopAttrib` с `GL_TEXTURE_BIT` вернул бы
+/// прежнюю привязку — кэш движка разошёлся бы с настоящей привязкой, и
+/// следующая модель (оружие в руках) рисовалась бы без своей текстуры, то есть
+/// белой. Включение текстурирования сохранено в `GL_ENABLE_BIT`.
+const GL_SCOPE_BITS: u32 = GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT | GL_POLYGON_BIT | GL_LINE_BIT | GL_CURRENT_BIT;
+const GL_CURRENT_BIT: u32 = 0x0000_0001;
+const GL_LINE_BIT: u32 = 0x0000_0004;
+const GL_POLYGON_BIT: u32 = 0x0000_0008;
+const GL_ENABLE_BIT: u32 = 0x0000_2000;
+const GL_COLOR_BUFFER_BIT: u32 = 0x0000_4000;
 /// `GL_LIGHTING`: без этого `glColor4f` не влияет на геометрию — цвет пикселя
 /// считает освещение, и контур выходит цветом материала движка, а не нашим.
 const GL_LIGHTING: u32 = 0x0B50;
@@ -421,7 +435,7 @@ impl Gl {
         let Color { r, g, b, a } = style.color;
         // SAFETY: контракт передан вызывающим.
         unsafe {
-            (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
+            (self.fns.push_attrib)(GL_SCOPE_BITS);
             (self.fns.disable)(GL_TEXTURE_2D);
             (self.fns.disable)(GL_LIGHTING);
             (self.fns.disable)(GL_COLOR_MATERIAL);
