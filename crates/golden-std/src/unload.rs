@@ -43,7 +43,7 @@ static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// Начата ли выгрузка с освобождением модуля.
 ///
 /// Отдельный флаг от [`STARTED`]: `detach` и `unload` — разные вещи, и после
-/// снятия хуков (`unload_wallbang`) выгрузка по `!unload` обязана сработать.
+/// снятия хуков (`unload_esp`) выгрузка по `!unload` обязана сработать.
 /// Общий флаг делал её невозможной — модуль оставался в памяти до перезапуска.
 static UNLOAD_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
