@@ -473,10 +473,21 @@ impl Gl {
             crate::glcolor::begin(style.color);
             render();
             crate::glcolor::end();
+            // Движок во время своей отрисовки пользуется текстурами и
+            // освещением, но сам их не включает: он считает, что состояние уже
+            // правильное. `pop_attrib` вернул бы «выключено», и следующая
+            // модель (оружие в руках) рисуется без текстуры. Поэтому текстуры
+            // после прохода включаем.
+            //
+            // Освещение наоборот гасим: следующий за нами проход — мир и HUD,
+            // а они нарисованы без освещения, с ним карта темнеет.
             if color_array {
                 (self.fns.enable_client_state)(GL_COLOR_ARRAY);
             }
             (self.fns.pop_attrib)();
+            (self.fns.enable)(GL_TEXTURE_2D);
+            (self.fns.disable)(GL_LIGHTING);
+            (self.fns.disable)(GL_COLOR_MATERIAL);
         }
     }
 
