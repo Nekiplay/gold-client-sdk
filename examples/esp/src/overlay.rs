@@ -6,7 +6,13 @@
 //! Строчки `Esp`:
 //!
 //! * `width` — толщина линий контура;
-//! * `color` — цвет контура и подписей (по умолчанию цвет команды);
+//! * `enemies_only` — рисовать только врагов (по умолчанию включено), своих не
+//!   обводим ни контуром, ни подписями;
+//! * `color` — цвет контура и подписей (по умолчанию цвет команды), он же
+//!   цвет закрытой части;
+//! * `visible_color` — цвет видимой части: контур рисуется вторым проходом с
+//!   тестом глубины, поэтому зелёными остаются только те части тела, которые
+//!   не закрыты стеной, ящиком или другим игроком;
 //! * `label` — первая строка над головой, вторая под ногами.
 //!
 //! Обводка рисуется в конце 3D-сцены, поэтому её не закрывают ящики, контейнеры
@@ -33,14 +39,17 @@ const WIDTH: f32 = 2.0;
 
 static LAST_REPORT: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// Ставит ESP: цвет по команде, ник над головой, оружие под ногами.
+/// Ставит ESP: только враги, цвет по команде, видимая часть — зелёная, ник над
+/// головой.
 ///
 /// # Errors
 /// Строка с причиной, если движок не отдал интерфейс или перехват не встал.
 pub fn install() -> Result<(), String> {
     golden_std::esp::Esp::new()
         .width(WIDTH)
+        .enemies_only(true)
         .color(|player: &Player| player.team().map_or(Color::WHITE, Team::color))
+        .visible_color(|_: &Player| Color::GREEN)
         .label(|player: &Player| (Some(player.name()), player.weapon()))
         .install()
 }
@@ -60,8 +69,10 @@ pub fn take_report() -> Option<String> {
         *last = Some(Instant::now());
     }
     Some(format!(
-        "esp: моделей {}, подписей {}",
+        "esp: моделей {}, подписей {}, камера {:?}, моя команда {:?}",
         golden_std::esp::drawn(),
-        golden_std::esp::labels()
+        golden_std::esp::labels(),
+        golden_std::esp::local_index(),
+        golden_std::esp::local_team()
     ))
 }

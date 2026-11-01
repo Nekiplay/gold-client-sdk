@@ -97,6 +97,31 @@ pub fn outline(style: OutlineStyle, draw: impl FnOnce()) -> bool {
     true
 }
 
+/// Два прохода: контур сквозь стены и его видимая часть.
+///
+/// Первый проход рисует всё в цвете `hidden` без теста глубины — контур виден
+/// сквозь мир и тела. Второй повторяет ту же отрисовку с тестом глубины в
+/// цвете `visible`: проходят только пиксели, которые не закрыты стеной,
+/// ящиком или другим телом. Закрытая часть остаётся в `hidden`, видимая
+/// становится `visible`.
+///
+/// `draw` вызывается дважды, поэтому это должен быть повторяемый вызов
+/// движковой отрисовки (`StudioDrawPlayer`), а не разовое действие.
+///
+/// `false`, если GL ещё не поднят.
+pub fn outline_split(hidden: OutlineStyle, visible: OutlineStyle, draw: impl Fn()) -> bool {
+    let first = outline(hidden, &draw);
+    let second = outline(visible, &draw);
+    first && second
+}
+
+/// Смещение `HUD_DrawNormalTriangles` в `client.dll` (см. `docs/STUDIO_REVERSE.md`).
+///
+/// Движок зовёт его в конце 3D-сцены, после мира и всех сущностей: здесь GL
+/// свободен, и здесь же рисуются подписи, которые не должны уходить под
+/// геометрию.
+pub const DRAW_NORMAL_TRIANGLES_RVA: usize = 0xB16D0;
+
 /// Ширина окна игры в пикселях.
 const DEFAULT_FOV: f32 = 90.0;
 

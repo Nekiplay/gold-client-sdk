@@ -18,11 +18,28 @@
 //! откладывать отрисовку до конца 3D-сцены (`HUD_DrawNormalTriangles`), а там
 //! заново звать движковую отрисовку модели, подставив «текущую сущность» —
 //! без неё `StudioDrawPlayer` возвращает ноль полигонов.
+//!
+//! ## Видимая часть контура
+//!
+//! [`Esp::visible_color`] включает второй проход: контур рисуется дважды —
+//! сначала сквозь стены базовым цветом, потом с тестом глубины цветом видимой
+//! части. Тест глубины здесь — тот же GL-буфер, который заполнили мир и тела:
+//! пиксели, закрытые стеной или чужим телом, во второй проход не проходят и
+//! остаются в базовом цвете, а видимые становятся зелёными (или какими задали).
+//! Никаких лучей и трассировок для этого не нужно.
+//!
+//! ## Только враги
+//!
+//! По умолчанию рисуются только враги: команда игрока сравнивается с командой
+//! того, из чьих глаз смотрит камера. Своих не обводим ни контуром, ни
+//! подписями. Игрок, чью команду определить не удалось (наблюдатель, первые
+//! кадры после подключения), врагом не считается — лучше пропустить, чем
+//! обвести своего. Всё это выключается [`Esp::enemies_only`].
 
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use golden_sdk::draw::Color;
 use golden_sdk::log;
@@ -31,13 +48,13 @@ use golden_sdk::module::InFlight;
 use golden_sdk::renderer::{interface_slot, StudioInterface, StudioRenderer};
 use golden_sdk::player::Team;
 
-use crate::game::Player;
+use crate::game::{Game, Player};
 
 use crate::hooks;
 use crate::render::{self, OutlineStyle};
 
-/// Смещение `HUD_DrawNormalTriangles` в `client.dll` (см. `docs/STUDIO_REVERSE.md`).
-const DRAW_NORMAL_TRIANGLES_RVA: usize = 0xB16D0;
+/// Смещение `HUD_DrawNormalTriangles` — общее с [`crate::render`].
+use crate::render::DRAW_NORMAL_TRIANGLES_RVA;
 
 /// Флаги `StudioDrawPlayer`: рисовать тело и оружие в руках.
 const STUDIO_RENDER: i32 = 1;
@@ -49,8 +66,12 @@ const REAL_HEIGHT: core::ops::RangeInclusive<f32> = 40.0..=120.0;
 /// Что рисовать и каким цветом.
 struct Settings {
     color: Option<Arc<dyn Fn(&Player) -> Color + Send + Sync>>,
+    /// Цвет видимой части: `None` — весь контур одним цветом.
+    visible: Option<Arc<dyn Fn(&Player) -> Color + Send + Sync>>,
     label: Option<Arc<dyn Fn(&Player) -> (Option<String>, Option<String>) + Send + Sync>>,
     width: f32,
+    /// Рисовать только врагов локального игрока.
+    enemies_only: bool,
 }
 
 /// Кого перерисовать в конце кадра.
@@ -59,7 +80,10 @@ struct Pending {
     info: usize,
     /// Сущность игрока: её движок читает как «текущую».
     entity: usize,
+    /// Цвет контура сквозь стены (и всей обводки, если видимая не задана).
     color: Color,
+    /// Цвет видимой части: рисуется вторым проходом с тестом глубины.
+    visible: Option<Color>,
 }
 
 static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
@@ -73,11 +97,19 @@ static ORIGINAL_PLAYER: AtomicUsize = AtomicUsize::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static LABELS: AtomicU32 = AtomicU32::new(0);
 
+/// Команда локального игрока и когда её выясняли.
+///
+/// Её спрашивают на каждого рисуемого игрока и на каждую подпись, а поиск идёт
+/// по всем сущностям — поэтому ответ живёт полсекунды.
+static LOCAL: Mutex<(Option<Instant>, Option<Team>)> = Mutex::new((None, None));
+
 /// Готовый ESP.
 pub struct Esp {
     color: Option<Arc<dyn Fn(&Player) -> Color + Send + Sync>>,
+    visible: Option<Arc<dyn Fn(&Player) -> Color + Send + Sync>>,
     label: Option<Arc<dyn Fn(&Player) -> (Option<String>, Option<String>) + Send + Sync>>,
     width: f32,
+    enemies_only: bool,
 }
 
 impl Default for Esp {
@@ -91,17 +123,39 @@ impl Esp {
     pub fn new() -> Self {
         Self {
             color: None,
+            visible: None,
             label: None,
             width: 2.0,
+            enemies_only: true,
         }
     }
 
     /// Цвет контура и подписей. По умолчанию — цвет команды игрока.
+    ///
+    /// Это же цвет закрытой части контура, если задан [`Esp::visible_color`].
     pub fn color<F>(mut self, color: F) -> Self
     where
         F: Fn(&Player) -> Color + Send + Sync + 'static,
     {
         self.color = Some(Arc::new(color));
+        self
+    }
+
+    /// Цвет видимой части контура: остальное остаётся в [`Esp::color`].
+    ///
+    /// Включает второй проход отрисовки — модель рисуется ещё раз с тестом
+    /// глубины. Закрытые стеной, ящиком или чужим телом пиксели до него не
+    /// доходят, поэтому зелёными становятся ровно те части, которые видно:
+    ///
+    /// ```
+    /// # use golden_std::{Color, esp::Esp};
+    /// Esp::new().color(|_| Color::RED).visible_color(|_| Color::GREEN);
+    /// ```
+    pub fn visible_color<F>(mut self, color: F) -> Self
+    where
+        F: Fn(&Player) -> Color + Send + Sync + 'static,
+    {
+        self.visible = Some(Arc::new(color));
         self
     }
 
@@ -120,6 +174,14 @@ impl Esp {
         self
     }
 
+    /// Рисовать только врагов локального игрока. По умолчанию включено.
+    ///
+    /// `false` рисует всех: и своих, и чужих.
+    pub fn enemies_only(mut self, enemies_only: bool) -> Self {
+        self.enemies_only = enemies_only;
+        self
+    }
+
     /// Ставит перехваты и подмену интерфейса. Ждёт, пока движок отдаст рендерер.
     ///
     /// # Errors
@@ -131,8 +193,10 @@ impl Esp {
                 .map_err(|_| "esp: настройки заняты".to_string())?;
             *settings = Some(Settings {
                 color: self.color,
+                visible: self.visible,
                 label: self.label,
                 width: self.width,
+                enemies_only: self.enemies_only,
             });
         }
         let previous = wait_for_interface(Duration::from_secs(120))
@@ -224,11 +288,15 @@ crate::hook! {
         if SCENE_HOOKED.load(Ordering::Acquire) {
             if let Some(renderer) = StudioRenderer::global() {
                 if let Some(entity) = renderer.current_entity() {
-                    let color = player_color(&renderer).unwrap_or(Color::WHITE);
-                    // Именно этот указатель движок просит у клиента: подставить
-                    // вместо него адрес поля из сущности нельзя — отрисовка
-                    // тогда возвращает ноль полигонов.
-                    stash(entity.addr(), player_info as usize, color);
+                    // Своих не обводим: ESP существует, чтобы видеть врагов.
+                    if player_of(&renderer).is_some_and(|player| wanted(&player)) {
+                        let color = player_color(&renderer).unwrap_or(Color::WHITE);
+                        let visible = visible_color(&renderer);
+                        // Именно этот указатель движок просит у клиента:
+                        // подставить вместо него адрес поля из сущности
+                        // нельзя — отрисовка тогда возвращает ноль полигонов.
+                        stash(entity.addr(), player_info as usize, color, visible);
+                    }
                 }
             }
         }
@@ -328,7 +396,7 @@ fn install_scene_hook() {
 }
 
 /// Запоминает игрока для отрисовки в конце кадра (без повторов).
-fn stash(entity: usize, info: usize, color: Color) {
+fn stash(entity: usize, info: usize, color: Color, visible: Option<Color>) {
     let Ok(mut replay) = REPLAY.lock() else {
         return;
     };
@@ -339,6 +407,7 @@ fn stash(entity: usize, info: usize, color: Color) {
         info,
         entity,
         color,
+        visible,
     });
 }
 
@@ -373,15 +442,15 @@ unsafe fn draw_replay() {
     let current = golden_sdk::process::hw_base()
         .map(|base| (base + golden_sdk::offsets::hw::P_CURRENT_ENTITY) as *mut usize);
 
-    IN_REPLAY.store(true, Ordering::Release);
-    for entry in entries {
-        let style = OutlineStyle::new(entry.color).width(width);
+    // Один проход: подставляет «текущую сущность», обводит нарисованную ею
+    // модель и возвращает прежнюю, чтобы не сбить движок.
+    let outline_entry = |entry: &Pending, style: OutlineStyle| {
         let previous = current.map(|slot| unsafe {
             let previous = *slot;
             *slot = entry.entity;
             previous
         });
-        render::outline(style, || unsafe {
+        let drawn = render::outline(style, || unsafe {
             draw_player(
                 STUDIO_RENDER | STUDIO_WEAPON,
                 entry.info as *mut c_void,
@@ -390,8 +459,33 @@ unsafe fn draw_replay() {
         if let (Some(slot), Some(previous)) = (current, previous) {
             unsafe { *slot = previous };
         }
-        DRAWN.fetch_add(1, Ordering::Relaxed);
+        drawn
+    };
+
+    IN_REPLAY.store(true, Ordering::Release);
+    if entries.iter().any(|entry| entry.visible.is_some()) {
+        // Сначала все контуры сквозь стены, потом видимые части у всех. Иначе
+        // закрытая стеной обводка одного игрока перекрыла бы зелёную обводку
+        // того, кто стоит перед ним: первый проход рисуется без глубины.
+        for entry in &entries {
+            outline_entry(entry, OutlineStyle::new(entry.color).width(width));
+        }
+        for entry in &entries {
+            if let Some(visible) = entry.visible {
+                outline_entry(
+                    entry,
+                    OutlineStyle::new(visible)
+                        .width(width)
+                        .through_walls(false),
+                );
+            }
+        }
+    } else {
+        for entry in &entries {
+            outline_entry(entry, OutlineStyle::new(entry.color).width(width));
+        }
     }
+    DRAWN.fetch_add(entries.len() as u64, Ordering::Relaxed);
     IN_REPLAY.store(false, Ordering::Release);
 }
 
@@ -434,6 +528,9 @@ fn labels_for_current_model() {
     let Some(player) = Player::from_raw(index, entity) else {
         return;
     };
+    if !wanted(&player) {
+        return;
+    }
     let color = player_color(&renderer).unwrap_or(Color::WHITE);
     let (above, below) = label(&player);
 
@@ -463,17 +560,103 @@ fn labels_for_current_model() {
     LABELS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Рисовать ли этого игрока (учитывает настройку «только враги»).
+fn wanted(player: &Player) -> bool {
+    if !enemies_only() {
+        return true;
+    }
+    is_enemy(player)
+}
+
+/// Включён ли режим «только враги». По умолчанию — да.
+fn enemies_only() -> bool {
+    SETTINGS
+        .lock()
+        .ok()
+        .and_then(|settings| settings.as_ref().map(|settings| settings.enemies_only))
+        .unwrap_or(true)
+}
+
+/// Номер сущности, из которой смотрит камера, — для лога и разбора.
+pub fn local_index() -> Option<i32> {
+    Game::get()?.view_entity()
+}
+
+/// Команда того, из чьих глаз смотрит камера.
+///
+/// `None`, если обе стороны неизвестны — тогда [`is_enemy`] никого не рисует.
+pub fn local_team() -> Option<Team> {
+    const TTL: Duration = Duration::from_millis(500);
+    if let Ok(local) = LOCAL.lock() {
+        if let (Some(at), team) = &*local {
+            if at.elapsed() < TTL {
+                return *team;
+            }
+        }
+    }
+    let team = find_local_team();
+    if let Ok(mut local) = LOCAL.lock() {
+        *local = (Some(Instant::now()), team);
+    }
+    team
+}
+
+/// Ищет команду локального игрока.
+///
+/// Сначала по `view_entity` из движка. Если движок индекс не отдал (или слот
+/// пуст) — по камере: она стоит в голове локального игрока, поэтому он и есть
+/// ближайший игрок к её точке.
+fn find_local_team() -> Option<Team> {
+    let game = Game::get()?;
+    if let Some(index) = game.view_entity() {
+        if let Some(team) = Player::by_index(index).and_then(|player| player.team()) {
+            return Some(team);
+        }
+    }
+    let origin = game.get_camera()?.origin;
+    let mut best: Option<(f32, Team)> = None;
+    for player in game.get_players() {
+        let (Some(team), Some(entity)) = (player.team(), player.entity()) else {
+            continue;
+        };
+        let distance = entity.origin().distance_to(origin);
+        // Дальше пары шагов камера от своего тела не отходит; наблюдателю этот
+        // путь не поможет, и это осознанно: в чужую голову он и не попадёт.
+        if distance > 128.0 {
+            continue;
+        }
+        if best.map_or(true, |(closest, _)| distance < closest) {
+            best = Some((distance, team));
+        }
+    }
+    best.map(|(_, team)| team)
+}
+
+/// Враг ли игрок: обе команды известны и различаются.
+///
+/// Если команду не определить (наблюдатель, первые кадры после подключения),
+/// игрок врагом не считается — лучше пропустить, чем обвести своего.
+fn is_enemy(player: &Player) -> bool {
+    match (player.team(), local_team()) {
+        (Some(theirs), Some(mine)) => theirs != mine,
+        _ => false,
+    }
+}
+
+/// Игрок, которого движок рисует прямо сейчас.
+fn player_of(renderer: &StudioRenderer) -> Option<Player> {
+    let entity = renderer.current_entity()?;
+    let index = entity.player_index();
+    if !(0..=63).contains(&index) {
+        return None;
+    }
+    Player::from_raw(index, entity)
+}
+
 /// Цвет для игрока, которого рисует движок: своя функция, иначе цвет команды.
 fn player_color(renderer: &StudioRenderer) -> Option<Color> {
-    let entity = renderer.current_entity();
     let model = renderer.studio_model()?;
-    let index = entity
-        .map(|entity| entity.player_index())
-        .filter(|index| (0..=63).contains(index));
-    let player = index.and_then(|index| {
-        let entity = entity?;
-        Player::from_raw(index, entity)
-    });
+    let player = player_of(renderer);
     let custom = SETTINGS
         .lock()
         .ok()
@@ -491,4 +674,14 @@ fn player_color(renderer: &StudioRenderer) -> Option<Color> {
         Team::from_model_name(model.name())
             .map_or(Color::WHITE, Team::color),
     )
+}
+
+/// Цвет видимой части контура, если он задан.
+fn visible_color(renderer: &StudioRenderer) -> Option<Color> {
+    let custom = SETTINGS
+        .lock()
+        .ok()
+        .and_then(|settings| settings.as_ref().and_then(|s| s.visible.clone()))?;
+    let player = player_of(renderer)?;
+    Some(custom(&player))
 }
