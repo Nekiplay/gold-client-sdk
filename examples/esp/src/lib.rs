@@ -45,7 +45,7 @@ unsafe extern "C" fn cmd_unload(_args: *const golden_std::concommand::CommandArg
     // Отключаемся из отдельного потока: колбэк исполняется на стеке движка, и
     // снимать свою же регистрацию прямо отсюда нельзя — движок вернётся в
     // объект команды, который мы освободим.
-    golden_std::unload::defer_detach();
+    golden_std::unload::defer_unload(golden_sdk::module::DEFAULT_DELAY_MS);
 }
 
 /// Точка входа DLL.

@@ -48,8 +48,8 @@ pub fn watch(path: PathBuf) {
             // исполнять освобождённый код.
             let _token = golden_sdk::module::ThreadToken::new();
             // Файл, оставшийся от прошлого запуска, не исполняем: в нём могла
-            // лежать `!unload`/`!detach` из прошлой проверки, и мод выключил бы
-            // себя через ноль секунд после загрузки.
+            // лежать `!unload` из прошлой проверки, и мод выключил бы себя
+            // через ноль секунд после загрузки.
             if path.exists() {
                 let _ = std::fs::remove_file(&path);
                 golden_sdk::log!(
@@ -73,9 +73,9 @@ pub fn watch(path: PathBuf) {
                         continue;
                     }
                     if let Some(action) = command.strip_prefix('!') {
-                        // Выгрузка и отключение запускаются из этого потока:
+                        // Выгрузка запускается из этого потока:
                         // он не должен ждать сам себя в `wait_threads`.
-                        let leaves = action.starts_with("unload") || action.starts_with("detach");
+                        let leaves = action.starts_with("unload");
                         if leaves {
                             drop(_token);
                             run_local(action);
@@ -109,10 +109,6 @@ fn run_local(action: &str) {
                 .unwrap_or(golden_sdk::module::DEFAULT_DELAY_MS);
             golden_sdk::log!("локальная команда: выгрузка через {delay} мс");
             crate::unload::unload_after(delay);
-        }
-        Some("detach") => {
-            golden_sdk::log!("локальная команда: отключение без освобождения модуля");
-            crate::unload::detach();
         }
         Some("ping") => golden_sdk::log!("локальная команда: ping — мод жив"),
         Some(other) => golden_sdk::log!("локальная команда: неизвестная «{other}»"),

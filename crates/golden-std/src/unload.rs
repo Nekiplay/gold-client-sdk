@@ -37,14 +37,10 @@ use golden_sdk::{log, module};
 /// можно выполнить только один раз.
 static CLEANUPS: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
 
-/// Выгрузка уже началась.
+/// Выгрузка уже началась: новые очистки не принимаются.
 static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Начата ли выгрузка с освобождением модуля.
-///
-/// Отдельный флаг от [`STARTED`]: `detach` и `unload` — разные вещи, и после
-/// снятия хуков (`unload_esp`) выгрузка по `!unload` обязана сработать.
-/// Общий флаг делал её невозможной — модуль оставался в памяти до перезапуска.
+/// Защита от повторного запуска освобождения модуля.
 static UNLOAD_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Регистрирует очистку, которая выполнится при выгрузке.
@@ -100,25 +96,11 @@ pub fn unload() -> bool {
     unload_after(module::DEFAULT_DELAY_MS)
 }
 
-/// Отключает мод из отдельного потока, а не там, где его позвали.
+/// Выгружает мод из отдельного потока, а не там, где его позвали.
 ///
 /// Нужно для команды в консоли: колбэк исполняется на стеке движка, и снимать
 /// регистрацию команды прямо внутри него нельзя — движок вернётся в объект,
 /// который мы только что освободили, и напечатает мусор вместо ответа.
-pub fn defer_detach() -> bool {
-    std::thread::Builder::new()
-        .name("golden-detach".to_string())
-        .spawn(|| {
-            // Поток снятия не должен ждать сам себя в `wait_threads`:
-            // иначе `detach` никогда не увидит `потоки вышли: true`.
-            drop(golden_sdk::module::ThreadToken::new());
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            detach();
-        })
-        .is_ok()
-}
-
-/// То же, что [`defer_detach`], но с освобождением модуля.
 pub fn defer_unload(after_ms: u32) -> bool {
     std::thread::Builder::new()
         .name("golden-unload".to_string())
@@ -131,34 +113,7 @@ pub fn defer_unload(after_ms: u32) -> bool {
         .is_ok()
 }
 
-/// Снимает всё, что мод поставил в игру, но оставляет DLL в памяти.
-///
-/// Нужно для двух вещей: проверить, что демонтаж хуков и возврат интерфейса
-/// чистые (игра обязана жить дальше), и остаться в процессе, когда
-/// освобождать модуль нельзя. Возвращает число выполненных очисток.
-pub fn detach() -> usize {
-    if STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        return 0;
-    }
-    golden_sdk::log!("отключение: снимаем хуки, модуль оставляем в памяти");
-    module::request_stop();
-    let done = run_cleanups();
-    // Перехваты — первыми: пока они стоят, движок может войти в наш код.
-    let hooks_off = crate::hooks::detach_all();
-    let input_off = crate::input::shutdown();
-    let commands_off = crate::concommand::shutdown();
-    golden_sdk::unload::run_cleanups();
-    let threads_out = module::wait_threads(golden_sdk::unload::WAIT_THREADS_MS);
-    let idle = module::wait_idle(golden_sdk::unload::WAIT_IDLE_MS);
-    golden_sdk::log!(
-        "отключение: очисток {done}, перехватов снято: {hooks_off}, \
-         перехват ввода снят: {input_off}, команд снято: {commands_off}, \
-         потоки вышли: {threads_out}, код пуст: {idle}"
-    );
-    done
-}
-
-/// То же, что [`unload`], но с явной паузой перед освобождением памяти.
+/// Выгружает DLL с явной паузой перед освобождением памяти.
 ///
 /// Большая пауза нужна, если выгрузка запускается прямо из перехвата, который
 /// ещё исполняется на стеке игрового потока.
@@ -166,6 +121,8 @@ pub fn unload_after(delay_ms: u32) -> bool {
     if UNLOAD_STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return false;
     }
+    // Новые очистки после начала выгрузки не принимаем.
+    STARTED.store(true, std::sync::atomic::Ordering::Release);
     golden_sdk::log!("выгрузка: снимаем хуки и освобождаем модуль");
     // 1. Потоки мода должны узнать, что пора выходить.
     module::request_stop();

@@ -57,4 +57,4 @@ pub use launch::{Game as LaunchedGame, GameConfig, LaunchError};
 pub use pose::{Pose, PoseCache};
 pub use render::{Color, OutlineStyle, Overlay, outline};
 pub use schedule::Scheduler;
-pub use unload::{defer_detach, defer_unload, detach, on_unload, unload};
+pub use unload::{defer_unload, on_unload, unload};
