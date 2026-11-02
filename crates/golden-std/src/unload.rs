@@ -102,6 +102,19 @@ pub fn unload() -> bool {
 /// регистрацию команды прямо внутри него нельзя — движок вернётся в объект,
 /// который мы только что освободили, и напечатает мусор вместо ответа.
 pub fn defer_unload(after_ms: u32) -> bool {
+    golden_sdk::log::line("выгрузка: команда получена");
+    // Отказ проверяем прямо здесь, на потоке движка: так он сразу виден в логе и
+    // в консоли, а не теряется в отдельном потоке.
+    if !can_unload() {
+        let mods = blocking_mods();
+        let reason = if mods.is_empty() {
+            String::from("над этим модом загружен другой")
+        } else {
+            format!("в процессе другие моды: {}", mods.join(", "))
+        };
+        golden_sdk::log::line(&format!("выгрузка отменена: {reason}"));
+        return false;
+    }
     std::thread::Builder::new()
         .name("golden-unload".to_string())
         .spawn(move || {
@@ -113,11 +126,45 @@ pub fn defer_unload(after_ms: u32) -> bool {
         .is_ok()
 }
 
+/// Можно ли безопасно выгрузиться.
+///
+/// Нельзя, если над этим модом загружен другой: его интерфейс зовёт наш как
+/// `previous`, и после освобождения модуля игра прыгнет в пустую память.
+/// Верхнему моду выгружаться можно, даже если под ним есть другие: он
+/// возвращает слот их таблице и снимает свои детуры.
+pub fn can_unload() -> bool {
+    !crate::hooks::interface_stacked()
+}
+
+/// Моды, которые мешают выгрузке прямо сейчас.
+pub fn blocking_mods() -> Vec<String> {
+    if crate::hooks::interface_stacked() {
+        golden_sdk::module::other_mods()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Выгружает DLL с явной паузой перед освобождением памяти.
 ///
 /// Большая пауза нужна, если выгрузка запускается прямо из перехвата, который
 /// ещё исполняется на стеке игрового потока.
 pub fn unload_after(delay_ms: u32) -> bool {
+    if !can_unload() {
+        let stacked = crate::hooks::interface_stacked();
+        let mods = blocking_mods();
+        let reason = if mods.is_empty() {
+            String::from("над этим модом загружен другой")
+        } else {
+            format!("в процессе другие моды: {}", mods.join(", "))
+        };
+        golden_sdk::log::line(&format!(
+            "выгрузка отменена: {reason} (цепочка интерфейса: {stacked}). \
+             Выгружайте моды по одному, загруженный последним первым, \
+             или закройте игру"
+        ));
+        return false;
+    }
     if UNLOAD_STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return false;
     }
@@ -168,10 +215,62 @@ pub fn unload_after(delay_ms: u32) -> bool {
     if !free_ok {
         return false;
     }
+    // Освобождать образ нельзя ни при каком числе модов: в этом клиенте движок
+    // оставляет указатель на нашу таблицу интерфейса и после освобождения
+    // прыгает в неё (дамп: hw.dll+0xBD793). Поэтому по умолчанию только снимаем
+    // перехваты, а память освобождает лишь явный `!free`.
+    if !FREE_REQUESTED.load(std::sync::atomic::Ordering::Acquire) {
+        golden_sdk::log!(
+            "выгрузка: перехваты сняты, образ остаётся в памяти (безопасно). \
+             Освободить с риском для игры (нужно для пересборки DLL) — `!free`"
+        );
+        return true;
+    }
     // 4. Лог закрываем сами: `FreeLibraryAndExitThread` должен видеть чистый
     //    дескриптор, а писать после этого уже некуда.
     log::close();
     module::unload_self_after(delay_ms, 0)
+}
+
+/// Снимает всё, но оставляет DLL в памяти.
+///
+/// Диагностика: если после этого игра живёт, а после полной выгрузки падает, то
+/// виноват не снятый перехват, а указатель из игры в нашу освобождённую память.
+pub fn detach_only() -> bool {
+    if !can_unload() {
+        golden_sdk::log!("detach отменён: над этим модом загружен другой");
+        return false;
+    }
+    golden_sdk::log!("detach: снимаем перехваты, модуль остаётся в памяти");
+    module::request_stop();
+    let done = run_cleanups();
+    let hooks_off = crate::hooks::detach_all();
+    let input_off = crate::input::shutdown();
+    let commands_off = crate::concommand::shutdown();
+    golden_sdk::unload::run_cleanups();
+    golden_sdk::log!(
+        "detach: очисток {done}, перехватов снято: {hooks_off}, \
+         перехват ввода снят: {input_off}, команд снято: {commands_off}"
+    );
+    true
+}
+
+/// Освобождать ли DLL после снятия перехватов.
+///
+/// По умолчанию — нет: движок держит указатели внутрь мода (в дампе падения
+/// `hw.dll+0xBD793` читает нулевую базу таблицы после освобождения), поэтому
+/// безопасная выгрузка только снимает перехваты и оставляет образ в памяти.
+/// Освобождение включается отдельно — `!free`.
+static FREE_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Снимает мод и освобождает DLL.
+///
+/// Опасно: если движок сохранил указатель внутрь мода, игра упадёт. Нужно,
+/// например, чтобы пересобрать DLL, не закрывая игру.
+pub fn defer_free(after_ms: u32) -> bool {
+    FREE_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+    defer_unload(after_ms)
 }
 
 #[cfg(test)]

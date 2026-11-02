@@ -23,6 +23,7 @@ use golden_sdk::grenade::Kind;
 use golden_sdk::module::InFlight;
 use golden_sdk::offsets::{player_info, player_state};
 use golden_sdk::renderer::{StudioInterface, StudioRenderer};
+use golden_std::Game;
 use golden_std::Vec3;
 use golden_std::grenade::{self, Prediction, Seen};
 use golden_std::render::{DRAW_NORMAL_TRIANGLES_RVA, Overlay};
@@ -90,19 +91,77 @@ struct Cached {
     labels: Vec<(Vec3, String, Color)>,
 }
 
+/// Сколько живёт след за летящей гранатой.
+const TRAIL_LIFE: Duration = Duration::from_millis(1200);
+
+/// Минимальный шаг между точками следа: чаще — лишние вершины и дёрганье.
+const TRAIL_STEP: f32 = 12.0;
+
+/// Скорость, с которой граната считается брошенной. Лежащая граната-подбор
+/// тоже есть в списке сущностей, но она стоит на месте.
+const TRAIL_CONFIRM_SPEED: f32 = 260.0;
+
+/// Как часто снимаем позиции гранат из списка сущностей.
+const TRAIL_POLL: Duration = Duration::from_millis(16);
+
+/// Когда след перестаёт обновляться — значит граната взорвалась или скрылась.
+const TRAIL_GONE: Duration = Duration::from_millis(250);
+
+/// Сколько следов помним одновременно.
+const TRAILS_MAX: usize = 8;
+
+/// Точка пути, снятая с настоящей гранаты.
+#[derive(Clone, Copy)]
+struct Sample {
+    pos: Vec3,
+    at: Instant,
+}
+
+/// След за конкретной летящей гранатой.
+struct Trail {
+    entity: i32,
+    kind: Kind,
+    /// Граната действительно летела, а не лежала подбором на земле.
+    flying: bool,
+    /// Когда гранату видели в последний раз: по этому следу и гаснем.
+    last_seen: Instant,
+    samples: Vec<Sample>,
+}
+
+/// Следы брошенных гранат: настоящий путь, снятый со списка сущностей.
+static TRAILS: Mutex<Vec<Trail>> = Mutex::new(Vec::new());
+
+/// Когда последний раз опрашивали список сущностей.
+static LAST_POLL: Mutex<Option<Instant>> = Mutex::new(None);
+
 /// Текущий тип гранаты.
 pub fn kind() -> Kind {
-    if KIND.load(Ordering::Acquire) == 1 {
-        Kind::Flash
-    } else {
-        Kind::He
+    kind_from_code(KIND.load(Ordering::Acquire))
+}
+
+/// Код типа в атомарном состоянии: `KIND` хранит именно его.
+const fn kind_code(kind: Kind) -> u8 {
+    match kind {
+        Kind::He => 0,
+        Kind::Flash => 1,
+        Kind::Smoke => 2,
     }
 }
 
-/// Включает показ гранаты: `show(Kind::He)` или `show(Kind::Flash)`.
+/// Обратный перевод кода в тип.
+const fn kind_from_code(code: u8) -> Kind {
+    match code {
+        1 => Kind::Flash,
+        2 => Kind::Smoke,
+        _ => Kind::He,
+    }
+}
+
+/// Включает показ гранаты: `show(Kind::He)`, `show(Kind::Flash)` или
+/// `show(Kind::Smoke)`.
 pub fn show(kind: Kind) {
     FORCED.store(true, Ordering::Release);
-    KIND.store(if kind == Kind::Flash { 1 } else { 0 }, Ordering::Release);
+    KIND.store(kind_code(kind), Ordering::Release);
     ENABLED.store(true, Ordering::Release);
     RECALC.store(true, Ordering::Release);
 }
@@ -133,7 +192,9 @@ pub fn install() -> Result<(), String> {
         version: StudioInterface::VERSION,
         // Через `draw_model` узнаём, какая модель в руках: движок зовёт его
         // для view-модели оружия. Оригинал вызываем сами.
-        draw_model: current.draw_model.map(|_| hook_draw_model as unsafe extern "C" fn(i32) -> i32),
+        draw_model: current
+            .draw_model
+            .map(|_| hook_draw_model as unsafe extern "C" fn(i32) -> i32),
         draw_player: Some(hook_draw_player),
     };
     let ours = Box::leak(Box::new(ours)) as *mut StudioInterface;
@@ -217,11 +278,156 @@ fn detect_held_from_entity() {
 /// других игроков (`w_usp.mdl`), поэтому значимо только имя с префиксом `v_`.
 /// Путь `models/` движок может и не писать — снимаем его, если он есть.
 fn is_view_model(name: &str) -> bool {
-    name.strip_prefix("models/").unwrap_or(name).starts_with("v_")
+    name.strip_prefix("models/")
+        .unwrap_or(name)
+        .starts_with("v_")
 }
 
-fn apply_held_name(name: &str) {
-    if !is_view_model(name) {
+/// Тип брошенной гранаты по имени мировой модели (`models/w_hegrenade.mdl`).
+fn world_kind(name: &str) -> Option<Kind> {
+    let name = name.strip_prefix("models/").unwrap_or(name);
+    if !name.starts_with("w_") {
+        return None;
+    }
+    if name.contains("hegrenade") {
+        Some(Kind::He)
+    } else if name.contains("flashbang") {
+        Some(Kind::Flash)
+    } else if name.contains("smokegrenade") {
+        Some(Kind::Smoke)
+    } else {
+        None
+    }
+}
+
+/// Запоминает положение брошенных гранат — и своих, и чужих.
+///
+/// Раньше позиция снималась с той модели, которую движок рисует в этот момент,
+/// и это работало только для гранат рядом с камерой. Список сущностей даёт все
+/// брошенные гранаты сразу: своя и чужие — одни и те же `w_*grenade` сущности
+/// сервера. Путь оттуда точный — с настоящими отскоками и остановками.
+fn capture_flying() {
+    let now = Instant::now();
+    {
+        let mut last = lock(&LAST_POLL);
+        if last.is_some_and(|at| now.duration_since(at) < TRAIL_POLL) {
+            return;
+        }
+        *last = Some(now);
+    }
+    let Some(game) = Game::get() else {
+        return;
+    };
+    let mut trails = lock(&TRAILS);
+    for entity in game.get_entities() {
+        let index = entity.index();
+        // `1..=32` — игроки: у них та же мировая модель висит в руках.
+        if index <= 32 {
+            continue;
+        }
+        let Some(path) = entity.model_path() else {
+            continue;
+        };
+        let Some(kind) = world_kind(&path.to_ascii_lowercase()) else {
+            continue;
+        };
+        let pos = entity.origin();
+        if !pos.x.is_finite() || !pos.y.is_finite() || !pos.z.is_finite() {
+            continue;
+        }
+        if pos.x == 0.0 && pos.y == 0.0 && pos.z == 0.0 {
+            continue;
+        }
+        touch_trail(&mut trails, index, kind, pos, now);
+    }
+}
+
+/// Добавляет точку к следу гранаты или заводит новый след.
+fn touch_trail(trails: &mut Vec<Trail>, entity: i32, kind: Kind, pos: Vec3, now: Instant) {
+    if let Some(trail) = trails.iter_mut().find(|trail| trail.entity == entity) {
+        trail.kind = kind;
+        trail.last_seen = now;
+        let speed = trail.samples.last().map_or(0.0, |last| {
+            let dt = now.duration_since(last.at).as_secs_f32().max(1e-3);
+            last.pos.distance_to(pos) / dt
+        });
+        if speed >= TRAIL_CONFIRM_SPEED {
+            trail.flying = true;
+        }
+        let far_enough = trail
+            .samples
+            .last()
+            .is_none_or(|last| last.pos.distance_to(pos) >= TRAIL_STEP);
+        if far_enough {
+            trail.samples.push(Sample { pos, at: now });
+        }
+        trail
+            .samples
+            .retain(|sample| now.duration_since(sample.at) <= TRAIL_LIFE);
+        return;
+    }
+
+    if trails.len() >= TRAILS_MAX {
+        if let Some(oldest) = trails
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, trail)| trail.last_seen)
+            .map(|(index, _)| index)
+        {
+            trails.swap_remove(oldest);
+        }
+    }
+    trails.push(Trail {
+        entity,
+        kind,
+        flying: false,
+        last_seen: now,
+        samples: vec![Sample { pos, at: now }],
+    });
+}
+
+/// Рисует следы летящих гранат: старые точки прозрачнее, хвост гаснет плавно.
+fn draw_trails() {
+    let now = Instant::now();
+    let segments = {
+        let mut trails = lock(&TRAILS);
+        trails.retain(|trail| now.duration_since(trail.last_seen) < TRAIL_GONE);
+        let mut segments: Vec<(Vec3, Vec3, Color)> = Vec::new();
+        for trail in trails.iter() {
+            if !trail.flying || trail.samples.len() < 2 {
+                continue;
+            }
+            let base = match trail.kind {
+                Kind::He => Color::RED,
+                Kind::Flash => Color::CYAN,
+                Kind::Smoke => Color::WHITE,
+            };
+            for pair in trail.samples.windows(2) {
+                let (from, to) = (pair[0], pair[1]);
+                let age = now.duration_since(to.at).as_secs_f32() / TRAIL_LIFE.as_secs_f32();
+                let alpha = (1.0 - age).clamp(0.0, 1.0);
+                if alpha <= 0.02 {
+                    continue;
+                }
+                segments.push((
+                    from.pos,
+                    to.pos,
+                    Color::rgba(base.r, base.g, base.b, alpha),
+                ));
+            }
+        }
+        segments
+    };
+    if segments.is_empty() {
+        return;
+    }
+    let Some(overlay) = Overlay::new() else {
+        return;
+    };
+    overlay.trail(&segments, 3.0);
+}
+
+fn apply_held_name(name: &str) {    if !is_view_model(name) {
         return;
     }
     let mut last = lock(&LAST_MODEL);
@@ -234,6 +440,8 @@ fn apply_held_name(name: &str) {
         Some(Kind::He)
     } else if name.contains("flashbang") {
         Some(Kind::Flash)
+    } else if name.contains("smokegrenade") {
+        Some(Kind::Smoke)
     } else {
         None
     };
@@ -248,15 +456,12 @@ fn apply_held_name(name: &str) {
     };
 
     FORCED.store(false, Ordering::Release);
-    let byte = if kind == Kind::Flash { 1 } else { 0 };
+    let byte = kind_code(kind);
     let was_enabled = ENABLED.swap(true, Ordering::AcqRel);
     let old_kind = KIND.swap(byte, Ordering::AcqRel);
     if !was_enabled || old_kind != byte {
         RECALC.store(true, Ordering::Release);
-        golden_sdk::log!(
-            "grenade: в руках {}",
-            if kind == Kind::Flash { "флешка" } else { "HE" }
-        );
+        golden_sdk::log!("grenade: в руках {}", kind.name());
     }
 }
 
@@ -267,6 +472,7 @@ golden_std::hook! {
         -> i32
     {
         detect_held_from_renderer();
+        capture_flying();
         unsafe { hook_weapon_original()(this, flags) }
     }
 }
@@ -333,11 +539,9 @@ unsafe fn remember_player(info: *mut c_void) -> Option<i32> {
         return None;
     }
     // SAFETY: та же запись; origin/angles проверены дампом живой памяти.
-    let origin_raw: [f32; 3] =
-        unsafe { golden_sdk::process::read(info + player_state::ORIGIN) };
+    let origin_raw: [f32; 3] = unsafe { golden_sdk::process::read(info + player_state::ORIGIN) };
     // SAFETY: те же гарантии.
-    let angles_raw: [f32; 3] =
-        unsafe { golden_sdk::process::read(info + player_state::ANGLES) };
+    let angles_raw: [f32; 3] = unsafe { golden_sdk::process::read(info + player_state::ANGLES) };
     let origin = Vec3::new(origin_raw[0], origin_raw[1], origin_raw[2]);
     let angles = Vec3::new(angles_raw[0], angles_raw[1], angles_raw[2]);
     if !finite(origin) || !finite(angles) || origin == Vec3::ZERO {
@@ -411,6 +615,8 @@ golden_std::hook! {
 
 /// Пересчитывает предсказание (если пора) и рисует его.
 fn frame() {
+    // Следы летящих гранат рисуем всегда: они не зависят от того, что в руках.
+    draw_trails();
     if !ENABLED.load(Ordering::Acquire) {
         return;
     }
@@ -555,6 +761,7 @@ fn build_labels(prediction: &Prediction) -> Vec<(Vec3, String, Color)> {
                 ));
             }
         }
+        Kind::Smoke => {}
     }
     labels
 }
@@ -573,6 +780,7 @@ fn draw() {
     let color = match prediction.kind {
         Kind::He => Color::RED,
         Kind::Flash => Color::CYAN,
+        Kind::Smoke => Color::WHITE,
     };
 
     let segments = prediction.flight.segments();
@@ -591,13 +799,9 @@ fn draw() {
     let summary = match prediction.kind {
         Kind::He => format!("HE: взрыв, заденет {}", prediction.damage.len()),
         Kind::Flash => format!("флешка: взрыв, ослепит {}", prediction.flashes.len()),
+        Kind::Smoke => format!("смок: дым через {:.1} с", prediction.flight.time),
     };
-    overlay.label(
-        explosion + Vec3::new(0.0, 0.0, 12.0),
-        &summary,
-        color,
-        true,
-    );
+    overlay.label(explosion + Vec3::new(0.0, 0.0, 12.0), &summary, color, true);
 }
 
 /// Цвет метки: враг — `hostile`, свой — зелёный, иначе исходный.

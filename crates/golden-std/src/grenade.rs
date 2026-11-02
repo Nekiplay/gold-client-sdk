@@ -145,7 +145,7 @@ fn predict_inner(
 
     let mut targets = Vec::new();
     let alive;
-    if with_targets {
+    if with_targets && kind != Kind::Smoke {
         // Список целей собираем из уже снятых поз (`SEEN`) и локального игрока.
         // `Game::get_players()` перебирает все 64 слота через
         // `entity_by_index` и стоит ~20 мс на кадр — для предсказания это

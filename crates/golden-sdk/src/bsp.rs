@@ -670,10 +670,30 @@ impl Bsp {
             plane.normal.dot(p2) - plane.dist,
         );
         if t1 >= 0.0 && t2 >= 0.0 {
-            return self.recursive(model, node.children[0], p1f, p2f, p1, p2, trace, depth + 1, steps);
+            return self.recursive(
+                model,
+                node.children[0],
+                p1f,
+                p2f,
+                p1,
+                p2,
+                trace,
+                depth + 1,
+                steps,
+            );
         }
         if t1 < 0.0 && t2 < 0.0 {
-            return self.recursive(model, node.children[1], p1f, p2f, p1, p2, trace, depth + 1, steps);
+            return self.recursive(
+                model,
+                node.children[1],
+                p1f,
+                p2f,
+                p1,
+                p2,
+                trace,
+                depth + 1,
+                steps,
+            );
         }
 
         // Точку пересечения отодвигаем на DIST_EPSILON в сторону начала луча.
@@ -772,7 +792,10 @@ fn model_bounds(
         for face in faces.get(start..end).unwrap_or(&[]) {
             let first = face.first_edge.max(0) as usize;
             let count = face.edges.max(0) as usize;
-            for &surfedge in surfedges.get(first..first.saturating_add(count)).unwrap_or(&[]) {
+            for &surfedge in surfedges
+                .get(first..first.saturating_add(count))
+                .unwrap_or(&[])
+            {
                 let Some(edge) = edges.get(surfedge.unsigned_abs() as usize) else {
                     continue;
                 };

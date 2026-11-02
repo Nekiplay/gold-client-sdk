@@ -375,12 +375,46 @@ impl Gl {
         unsafe { self.lines_with(color, width, segments, Depth::Ignore) }
     }
 
+    /// Отрезки, у каждого свой цвет и прозрачность — затухающий след.
+    ///
+    /// Один `glBegin`/`glEnd` на весь список: цвет меняется между вершинами,
+    /// поэтому след из десятков отрезков стоит один вызов состояния GL.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`].
+    pub unsafe fn lines_shaded(&self, width: f32, segments: &[(Vec3, Vec3, Color)], depth: Depth) {
+        if segments.is_empty() {
+            return;
+        }
+        // SAFETY: контракт передан вызывающим: контекст активен в этом потоке.
+        unsafe {
+            (self.fns.push_attrib)(GL_ALL_ATTRIB_BITS);
+            (self.fns.disable)(GL_TEXTURE_2D);
+            (self.fns.disable)(GL_LIGHTING);
+            (self.fns.disable)(GL_COLOR_MATERIAL);
+            match depth {
+                Depth::Test => (self.fns.enable)(GL_DEPTH_TEST),
+                Depth::Ignore => (self.fns.disable)(GL_DEPTH_TEST),
+            }
+            (self.fns.enable)(GL_BLEND);
+            (self.fns.blend_func)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            (self.fns.line_width)(width.clamp(1.0, 10.0));
+            (self.fns.begin)(GL_LINES);
+            for (a, b, color) in segments {
+                (self.fns.color4f)(color.r, color.g, color.b, color.a);
+                (self.fns.vertex3f)(a.x, a.y, a.z);
+                (self.fns.vertex3f)(b.x, b.y, b.z);
+            }
+            (self.fns.end)();
+            (self.fns.pop_attrib)();
+        }
+    }
+
     /// Рисует отрезки с явно выбранным режимом глубины.
     ///
     /// # Safety
     /// См. [`Gl::get`].
-    pub unsafe fn lines_with(
-        &self,
+    pub unsafe fn lines_with(        &self,
         color: Color,
         width: f32,
         segments: &[(Vec3, Vec3)],

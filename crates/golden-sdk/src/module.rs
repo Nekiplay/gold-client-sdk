@@ -13,6 +13,7 @@
 //! функцию. Для этого есть реестр очистки — [`crate::unload`].
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -41,6 +42,133 @@ unsafe extern "system" {
     fn CloseHandle(handle: isize) -> i32;
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
+    fn CreateToolhelp32Snapshot(flags: u32, process: u32) -> isize;
+    fn Module32FirstW(snapshot: isize, entry: *mut ModuleEntry32W) -> i32;
+    fn Module32NextW(snapshot: isize, entry: *mut ModuleEntry32W) -> i32;
+    fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+}
+
+/// Метка мода: экспорт, по которому моды узнают друг друга.
+///
+/// Имя файла и каталог ничего не значат — сборку можно переименовать и положить
+/// куда угодно. Зато все моды собраны с этим SDK, поэтому экспорт
+/// [`golden_client_mod`] есть у каждого и только у них.
+pub const MARKER: &[u8] = b"golden_client_mod\0";
+
+/// Экспорт-метка: сам по себе ничего не делает, нужен только для опознания.
+#[unsafe(no_mangle)]
+pub extern "system" fn golden_client_mod() -> u32 {
+    1
+}
+
+/// Экспортирует ли модуль метку мода.
+fn exports_marker(handle: *mut c_void) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    // SAFETY: `handle` — HMODULE из снимка модулей, имя с завершающим нулём.
+    !unsafe { GetProcAddress(handle, MARKER.as_ptr()) }.is_null()
+}
+
+/// `TH32CS_SNAPMODULE`.
+const SNAP_MODULE: u32 = 0x0000_0008;
+/// `TH32CS_SNAPMODULE32` — иначе на 32-битном процессе снимок не даст модулей.
+const SNAP_MODULE32: u32 = 0x0000_0010;
+/// `INVALID_HANDLE_VALUE` для снимков.
+const BAD_SNAPSHOT: isize = -1;
+/// `MAX_PATH`.
+const MAX_PATH: usize = 260;
+/// `MAX_MODULE_NAME32`.
+const MAX_MODULE_NAME: usize = 256;
+
+/// `MODULEENTRY32W` — запись снимка модулей процесса.
+#[repr(C)]
+struct ModuleEntry32W {
+    size: u32,
+    module_id: u32,
+    process_id: u32,
+    global_usage: u32,
+    process_usage: u32,
+    base: *mut u8,
+    base_size: u32,
+    handle: *mut c_void,
+    module: [u16; MAX_MODULE_NAME],
+    path: [u16; MAX_PATH],
+}
+
+/// Имена DLL, загруженных в наш процесс.
+pub fn loaded_names() -> Vec<String> {
+    loaded_modules()
+        .into_iter()
+        .map(|(_, path)| file_of(&path))
+        .collect()
+}
+
+/// Дескрипторы и пути загруженных DLL.
+fn loaded_modules() -> Vec<(*mut c_void, String)> {
+    let mut modules = Vec::new();
+    // SAFETY: снимок модулей текущего процесса, дескриптор закрываем сами.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(SNAP_MODULE | SNAP_MODULE32, process_id()) };
+    if snapshot == BAD_SNAPSHOT || snapshot == 0 {
+        return modules;
+    }
+    let mut entry = empty_entry();
+    // SAFETY: снимок валиден, запись соответствует ожидаемому layout.
+    if unsafe { Module32FirstW(snapshot, &mut entry) } != 0 {
+        loop {
+            modules.push((entry.handle, wide_to_string(&entry.path)));
+            // SAFETY: снимок валиден, запись переиспользуется.
+            if unsafe { Module32NextW(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+    }
+    // SAFETY: снимок наш, больше не нужен.
+    unsafe { CloseHandle(snapshot) };
+    modules
+}
+
+fn empty_entry() -> ModuleEntry32W {
+    ModuleEntry32W {
+        size: core::mem::size_of::<ModuleEntry32W>() as u32,
+        module_id: 0,
+        process_id: 0,
+        global_usage: 0,
+        process_usage: 0,
+        base: core::ptr::null_mut(),
+        base_size: 0,
+        handle: core::ptr::null_mut(),
+        module: [0; MAX_MODULE_NAME],
+        path: [0; MAX_PATH],
+    }
+}
+
+/// Имя файла из полного пути.
+fn file_of(path: &str) -> String {
+    match path.rsplit_once(['\\', '/']) {
+        Some((_, name)) => String::from(name),
+        None => String::from(path),
+    }
+}
+
+/// Другие моды в процессе: DLL с экспортом-меткой [`MARKER`].
+///
+/// Ни имя файла, ни каталог не важны: сборку можно переименовать и положить в
+/// любую папку. Опознаём по экспорту, который даёт этот SDK.
+pub fn other_mods() -> Vec<String> {
+    let ours = Module::current().map(|module| module.handle());
+    loaded_modules()
+        .into_iter()
+        .filter(|(handle, _)| Some(*handle) != ours)
+        .filter(|(handle, _)| exports_marker(*handle))
+        .map(|(_, path)| file_of(&path))
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+fn wide_to_string(wide: &[u16]) -> String {
+    let len = wide.iter().position(|unit| *unit == 0).unwrap_or(wide.len());
+    String::from_utf16_lossy(&wide[..len])
 }
 
 /// Загруженный модуль (в Win32 — `HMODULE`).
@@ -373,6 +501,17 @@ mod tests {
     #[test]
     fn null_address_is_rejected() {
         assert!(Module::from_address(0).is_none());
+    }
+
+    #[test]
+    fn lists_loaded_modules() {
+        let names = loaded_names();
+        assert!(!names.is_empty(), "снимок модулей пуст");
+        let ours = Module::current().and_then(|module| module.file_name());
+        assert!(
+            ours.as_ref().is_some_and(|ours| names.iter().any(|name| name == ours)),
+            "в списке нет своего модуля: {names:?}"
+        );
     }
 
     #[test]

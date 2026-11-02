@@ -68,6 +68,16 @@ impl EntityRef {
         unsafe { process::read(self.addr() + crate::offsets::entity::ORIGIN) }
     }
 
+    /// Номер сущности из `cl_entity_t` без ограничений.
+    ///
+    /// [`Self::player_index`] намеренно отсекает всё, что не похоже на слот
+    /// игрока; для брошенной гранаты номер сущности больше 32, поэтому нужен
+    /// прямой доступ к полю.
+    pub fn index(&self) -> i32 {
+        // SAFETY: указатель проверен при создании.
+        unsafe { process::read(self.addr() + crate::offsets::entity::INDEX) }
+    }
+
     /// `model_t *`.
     pub fn model(&self) -> *mut c_void {
         // SAFETY: указатель проверен при создании.

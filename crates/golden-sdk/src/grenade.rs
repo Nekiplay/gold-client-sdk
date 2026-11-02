@@ -12,6 +12,9 @@
 //!
 //! * HE: гравитация `0.55`, трение `0.7`, запал `1.5` с, `pev->dmg = 100`;
 //! * флешка: гравитация `0.5`, трение `0.8`, запал `1.5` с, `pev->dmg = 35`;
+//! * смок: гравитация `0.5`, трение `0.8`, запал `1.5` с, `pev->dmg = 35`, но
+//!   дымит только коснувшись земли (`SG_TumbleThink`), поэтому в воздухе
+//!   продолжает лететь и после запала;
 //! * отскок: `overbounce = 2 - friction`, скорость гасится, когда её квадрат
 //!   меньше `900` (`SV_Physics_Bounce` в ReHLDS);
 //! * точка взрыва: луч вниз на 40 единиц от `origin + (0,0,8)`, затем
@@ -52,6 +55,8 @@ pub enum Kind {
     He,
     /// Светошумовая (`weapon_flashbang`).
     Flash,
+    /// Дымовая (`weapon_smokegrenade`).
+    Smoke,
 }
 
 impl Kind {
@@ -59,7 +64,7 @@ impl Kind {
     pub const fn gravity(self) -> f32 {
         match self {
             Self::He => 0.55,
-            Self::Flash => 0.5,
+            Self::Flash | Self::Smoke => 0.5,
         }
     }
 
@@ -67,7 +72,7 @@ impl Kind {
     pub const fn friction(self) -> f32 {
         match self {
             Self::He => 0.7,
-            Self::Flash => 0.8,
+            Self::Flash | Self::Smoke => 0.8,
         }
     }
 
@@ -76,20 +81,35 @@ impl Kind {
         1.5
     }
 
-    /// `pev->dmg`: у HE это ещё и урон в центре, у флешки — только для
+    /// Сколько максимум считать полёт: смок ждёт земли и может висеть дольше
+    /// запала, остальным хватает запала.
+    pub const fn max_flight(self) -> f32 {
+        match self {
+            Self::Smoke => 6.0,
+            _ => 1.5,
+        }
+    }
+
+    /// Срабатывает только коснувшись земли (`SG_TumbleThink`).
+    pub const fn needs_ground(self) -> bool {
+        matches!(self, Self::Smoke)
+    }
+
+    /// `pev->dmg`: у HE это ещё и урон в центре, у флешки и смока — только для
     /// выталкивания из стены.
     pub const fn blast_damage(self) -> f32 {
         match self {
             Self::He => 100.0,
-            Self::Flash => 35.0,
+            Self::Flash | Self::Smoke => 35.0,
         }
     }
 
-    /// Радиус поражения: `350` у HE, `1500` у флешки.
+    /// Радиус поражения: `350` у HE, `1500` у флешки, у смока урона нет.
     pub const fn radius(self) -> f32 {
         match self {
             Self::He => 350.0,
             Self::Flash => 1500.0,
+            Self::Smoke => 0.0,
         }
     }
 
@@ -98,6 +118,7 @@ impl Kind {
         match self {
             Self::He => "HE",
             Self::Flash => "флешка",
+            Self::Smoke => "смок",
         }
     }
 }
@@ -216,12 +237,17 @@ pub fn simulate<F>(kind: Kind, start: Vec3, velocity: Vec3, mut trace: F) -> Fli
 where
     F: FnMut(Vec3, Vec3) -> Option<Surface>,
 {
-    let steps = (kind.fuse() / STEP).ceil() as usize;
+    let fuse = kind.fuse();
+    let steps = (kind.max_flight() / STEP).ceil() as usize;
     let mut points = Vec::with_capacity(steps + 1);
     let mut origin = start;
     let mut velocity = velocity;
     let mut bounces = 0;
     let mut stopped = false;
+    // Приземлилась ли граната: обе ветки трассировки выставляют флаг до
+    // проверки запала ниже.
+    let mut grounded;
+    let mut time = 0.0f32;
 
     points.push(origin);
 
@@ -238,7 +264,12 @@ where
         let end = origin + step;
 
         match trace(origin, end) {
-            None => origin = end,
+            None => {
+                origin = end;
+                // В воздухе земля «потеряна»: смок, скатившийся с края, снова
+                // ждёт приземления.
+                grounded = false;
+            }
             Some(hit) => {
                 if hit.allsolid {
                     stopped = true;
@@ -249,6 +280,7 @@ where
 
                 origin = hit.point;
                 bounces += 1;
+                grounded = hit.normal.z > 0.7;
 
                 // SV_ClipVelocity: скорость отражается с overbounce.
                 let overbounce = 2.0 - kind.friction();
@@ -274,6 +306,14 @@ where
         }
 
         points.push(origin);
+
+        time += STEP;
+
+        // Запал истёк: HE и флешка срабатывают в воздухе, смок — только
+        // коснувшись земли, иначе дымит там, куда долетел.
+        if time + 1e-4 >= fuse && (grounded || stopped || !kind.needs_ground()) {
+            break;
+        }
     }
 
     let explosion = explosion_point(kind, origin, &mut trace);
@@ -284,7 +324,7 @@ where
         explosion,
         bounces,
         stopped,
-        time: kind.fuse(),
+        time,
     }
 }
 
@@ -509,6 +549,45 @@ mod tests {
 
     fn no_hits(_from: Vec3, _to: Vec3) -> Option<Surface> {
         None
+    }
+
+    /// Пол `z = 0`: попадание, если луч опустился ниже.
+    fn floor(from: Vec3, to: Vec3) -> Option<Surface> {
+        if to.z > 0.0 {
+            return None;
+        }
+        let drop = from.z - to.z;
+        let fraction = if drop.abs() < 1e-6 {
+            0.0
+        } else {
+            (from.z / drop).clamp(0.0, 1.0)
+        };
+        let point = Vec3::new(
+            from.x + (to.x - from.x) * fraction,
+            from.y + (to.y - from.y) * fraction,
+            0.0,
+        );
+        Some(Surface {
+            point,
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            fraction,
+            allsolid: false,
+        })
+    }
+
+    #[test]
+    fn smoke_waits_for_ground_while_he_explodes_in_air() {
+        // Высокий бросок вверх: за 1.5 с граната не успевает упасть.
+        let start = Vec3::new(0.0, 0.0, 1000.0);
+
+        let he = simulate(Kind::He, start, Vec3::ZERO, floor);
+        assert!((he.time - 1.5).abs() < 0.02, "{}", he.time);
+        assert!(he.explosion.z > 100.0, "{:?}", he.explosion);
+
+        // Смок в воздухе не дымит: ждёт земли и только потом срабатывает.
+        let smoke = simulate(Kind::Smoke, start, Vec3::ZERO, floor);
+        assert!(smoke.time > 2.0, "{}", smoke.time);
+        assert!(smoke.explosion.z < 10.0, "{:?}", smoke.explosion);
     }
 
     #[test]

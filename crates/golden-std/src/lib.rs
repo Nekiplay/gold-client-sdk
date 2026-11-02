@@ -27,11 +27,13 @@
 //!   всё снимается само при [`unload`];
 //! * [`concommand`] — свои консольные команды, которые снимаются при выгрузке;
 //! * [`wallbang`] — рейкаст по геометрии карты: `Map::trace(from, to)`;
+//! * [`box3`] — прямоугольный бокс и пересечение с ним лучом: [`box3::Box3`];
 //! * [`launch`] — запуск локальной игры с ботами и инъекция своей DLL;
 //! * [`unload`] — выгрузка мода из игры без перезапуска.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod box3;
 pub mod commands;
 pub mod concommand;
 pub mod console;

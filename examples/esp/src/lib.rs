@@ -128,6 +128,10 @@ fn bootstrap() {
             break;
         }
         if hotkey_pressed(UNLOAD_KEY) {
+            if !golden_std::unload::can_unload() {
+                golden_std::unload::unload_after(0);
+                continue;
+            }
             golden_sdk::log!("F12: выгружаем мод");
             // Поток выгрузки не должен ждать сам себя в `wait_threads`.
             drop(token.take());

@@ -72,7 +72,7 @@ pub fn watch(path: PathBuf) {
                     if let Some(action) = command.strip_prefix('!') {
                         // Выгрузка запускается из этого потока:
                         // он не должен ждать сам себя в `wait_threads`.
-                        let leaves = action.starts_with("unload");
+                        let leaves = action.starts_with("unload") || action.starts_with("free");
                         if leaves {
                             drop(_token);
                             run_local(action);
@@ -108,6 +108,20 @@ fn run_local(action: &str) {
             crate::unload::unload_after(delay);
         }
         Some("ping") => golden_sdk::log!("локальная команда: ping — мод жив"),
+        Some("detach") => {
+            golden_sdk::log!("локальная команда: detach");
+            crate::unload::detach_only();
+            return;
+        }
+        Some("free") => {
+            let delay = parts
+                .next()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(golden_sdk::module::DEFAULT_DELAY_MS);
+            golden_sdk::log!("локальная команда: освобождение DLL через {delay} мс");
+            crate::unload::defer_free(delay);
+            return;
+        }
         Some(other) => golden_sdk::log!("локальная команда: неизвестная «{other}»"),
         None => {}
     }

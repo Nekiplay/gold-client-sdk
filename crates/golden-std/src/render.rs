@@ -183,6 +183,13 @@ impl Overlay {
         unsafe { self.gl.lines_xray(color, width, segments) }
     }
 
+    /// Затухающий след: у каждого отрезка свой цвет с прозрачностью.
+    ///
+    /// Глубина проверяется — след скрывается за стенами, как настоящий дым.
+    pub fn trail(&self, segments: &[(Vec3, Vec3, Color)], width: f32) {
+        unsafe { self.gl.lines_shaded(width, segments, draw::Depth::Test) }
+    }
+
     /// Перерисовывает модель контурами в цвете команды.
     ///
     /// `false`, если движок не дал слот или GL не поднят.

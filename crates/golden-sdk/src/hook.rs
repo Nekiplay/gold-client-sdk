@@ -14,6 +14,7 @@
 //! * [`Detour::trampoline`] — вызов оригинала из своего кода.
 
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::renderer::{StudioInterface, interface_slot};
 
@@ -109,6 +110,9 @@ pub struct SwappedInterface {
     previous: *mut StudioInterface,
 }
 
+/// Слот занят чужим модом, и мы это уже сообщили в лог.
+static YIELDED: AtomicBool = AtomicBool::new(false);
+
 impl core::fmt::Debug for SwappedInterface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SwappedInterface")
@@ -138,6 +142,17 @@ impl SwappedInterface {
         })
     }
 
+    /// Стоит ли над нами ещё один мод.
+    ///
+    /// Верхний мод подменил слот своим интерфейсом и зовёт наш как `previous`,
+    /// то есть держит указатели в нашу таблицу. Пока он жив, выгружаться
+    /// нельзя: после освобождения модуля он прыгнет в пустую память.
+    pub fn stacked(&self) -> bool {
+        // SAFETY: слот валиден на всё время жизни объекта.
+        let current = unsafe { *self.slot };
+        !current.is_null() && current != self.ours && current != self.previous
+    }
+
     /// Интерфейс, который был до подмены.
     pub fn previous(&self) -> *mut StudioInterface {
         self.previous
@@ -146,11 +161,27 @@ impl SwappedInterface {
     /// Возвращает подмену, если движок/клиент её сбросили.
     ///
     /// Возвращает `true`, если подмену пришлось вернуть.
+    ///
+    /// Если слот занял другой мод, подмена не отбирается: иначе два мода будут
+    /// перетягивать интерфейс каждый кадр, и всё, что рисуется через хуки
+    /// (скелеты, траектория), начнёт мигать. Такой мод просто ждёт: когда
+    /// верхний выгрузится, слот вернётся к нашему `previous` или к нам самим.
     pub fn reinstall(&self) -> bool {
         // SAFETY: слот валиден на всё время жизни объекта.
         let current = unsafe { *self.slot };
         if current == self.ours {
             return false;
+        }
+        if current != self.previous {
+            if !YIELDED.swap(true, Ordering::Relaxed) {
+                crate::log::line(
+                    "перехват: интерфейс занят другим модом — подмена не возвращается, пока он загружен",
+                );
+            }
+            return false;
+        }
+        if YIELDED.swap(false, Ordering::Relaxed) {
+            crate::log::line("перехват: интерфейс освободился — подмена возвращена");
         }
         // SAFETY: см. `install`.
         unsafe { *self.slot = self.ours };
@@ -163,7 +194,14 @@ impl Drop for SwappedInterface {
         // SAFETY: слот валиден на всё время жизни объекта. Указатель движка
         // возвращается к клиентской таблице: иначе он останется указывать в
         // нашу DLL и после освобождения прыгнет в пустую память.
-        unsafe { *self.slot = self.previous };
+        //
+        // Если в слоте уже стоит интерфейс другого мода, ничего не трогаем: он
+        // сам вызовет нас как свой `previous`, и подмена под ним должна
+        // оставаться. Такой мод надо выгружать первым — иначе его цепочка
+        // останется указывать в освобождённую DLL.
+        if unsafe { *self.slot } == self.ours {
+            unsafe { *self.slot = self.previous };
+        }
     }
 }
 

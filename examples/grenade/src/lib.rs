@@ -23,6 +23,7 @@
 //!   (у HE есть и алиас `grenade_he`, но это имя может быть занято командой
 //!   клиента, тогда сработает только `grenade_damage`);
 //! * `grenade_flash` — то же для флешки: кого ослепит и на сколько;
+//! * `grenade_smoke` — траектория смока и точка, где он задымит;
 //! * `grenade_off` — выключить отрисовку;
 //! * `unload_grenades` — выгрузить мод без перезапуска игры.
 //!
@@ -78,6 +79,15 @@ unsafe extern "C" fn cmd_he(_args: *const golden_std::concommand::CommandArgs) {
 unsafe extern "C" fn cmd_flash(_args: *const golden_std::concommand::CommandArgs) {
     scene::show(Kind::Flash);
     golden_sdk::log!("grenade: показываем флешку");
+}
+
+/// Консольная команда `grenade_smoke`.
+///
+/// # Safety
+/// Вызывается движком из игрового потока; аргументы не разыменовываем.
+unsafe extern "C" fn cmd_smoke(_args: *const golden_std::concommand::CommandArgs) {
+    scene::show(Kind::Smoke);
+    golden_sdk::log!("grenade: показываем смок");
 }
 
 /// Консольная команда `grenade_off`.
@@ -142,6 +152,11 @@ fn bootstrap() {
         cmd_flash,
         "траектория флешки и список ослеплённых",
     );
+    register(
+        "grenade_smoke",
+        cmd_smoke,
+        "траектория смока и точка, где он задымит",
+    );
     register("grenade_off", cmd_off, "выключить отрисовку гранат");
 
     // Эхо набранных команд убираем на стороне клиента: консоль Gold Client
@@ -151,6 +166,7 @@ fn bootstrap() {
         "grenade_he",
         "grenade_damage",
         "grenade_flash",
+        "grenade_smoke",
         "grenade_off",
     ]) {
         golden_sdk::log!("консоль: эхо команд скрыто");
@@ -172,6 +188,12 @@ fn bootstrap() {
             break;
         }
         if hotkey_pressed(UNLOAD_KEY) {
+            // Выгрузка могла быть отменена: над модом загружен другой, и
+            // выгружаться первым нельзя. Тогда продолжаем работать.
+            if !golden_std::unload::can_unload() {
+                golden_std::unload::unload_after(0);
+                continue;
+            }
             golden_sdk::log!("F12: выгружаем мод");
             // Поток выгрузки не должен ждать сам себя в `wait_threads`.
             drop(token.take());

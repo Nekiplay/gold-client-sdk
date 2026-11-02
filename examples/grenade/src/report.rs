@@ -46,10 +46,10 @@ pub fn print(prediction: &Prediction) {
                 for row in &rows {
                     let lethal = row.health > 0 && row.value.damage >= row.health as f32;
                     let health = if row.health > 0 {
-                            format!("hp {}", row.health)
-                        } else {
-                            "hp ?".to_string()
-                        };
+                        format!("hp {}", row.health)
+                    } else {
+                        "hp ?".to_string()
+                    };
                     let text = format!(
                         "  {} — -{:.0} ({}){}{}",
                         row.name,
@@ -185,6 +185,22 @@ pub fn print(prediction: &Prediction) {
                     ));
                 }
             }
+        }
+        Kind::Smoke => {
+            builder = builder.line(format!(
+                "  дым: через {:.1} с после броска",
+                prediction.flight.time
+            ));
+            if !prediction.flight.stopped {
+                builder =
+                    builder.warn("  граната ещё в полёте — дым появится, когда коснётся земли");
+            }
+            builder = builder.line("  урона и ослепления у смока нет");
+            builder.send();
+            golden_sdk::log::line(&format!(
+                "grenade: {} (дым через {:.1} с)",
+                title, prediction.flight.time
+            ));
         }
     }
 

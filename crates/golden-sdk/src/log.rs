@@ -137,6 +137,10 @@ pub fn line(message: impl AsRef<str>) {
             let mut written = 0u32;
             // SAFETY: дескриптор открыт на запись, буфер и длина корректны.
             unsafe {
+                // Позицию ставим на конец перед каждой строкой: несколько модов
+                // пишут в один файл через свои дескрипторы, и у каждого свой
+                // указатель — без этого строки затирали бы друг друга.
+                SetFilePointer(handle, 0, core::ptr::null_mut(), FILE_END);
                 WriteFile(
                     handle,
                     text.as_ptr(),

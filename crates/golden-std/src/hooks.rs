@@ -185,6 +185,18 @@ pub unsafe fn interface(ours: *mut StudioInterface) -> Result<(), Error> {
     }
 }
 
+/// Стоит ли над нашим интерфейсом ещё один мод.
+///
+/// Если да, выгрузка этого мода уронила бы игру: верхний мод держит указатели в
+/// нашу таблицу интерфейса и после освобождения модуля прыгнет в пустую память.
+pub fn interface_stacked() -> bool {
+    let Ok(list) = MANAGED.lock() else {
+        return false;
+    };
+    list.iter()
+        .any(|entry| matches!(entry, Managed::Interface(swap) if swap.stacked()))
+}
+
 /// Сколько перехватов в реестре.
 pub fn count() -> usize {
     MANAGED.lock().map(|list| list.len()).unwrap_or(0)
