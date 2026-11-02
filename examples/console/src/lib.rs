@@ -61,9 +61,9 @@ unsafe extern "C" fn cmd_plain(_args: *const CommandArgs) {
     concommand::print("console_plain: строка через concommand::print");
 }
 
-/// Выгрузка мода без перезапуска игры.
+/// Выгрузка мода без перезапуска игры: DLL освобождается целиком.
 unsafe extern "C" fn cmd_unload(_args: *const CommandArgs) {
-    golden_std::unload::defer_detach();
+    golden_std::unload::defer_unload(golden_sdk::module::DEFAULT_DELAY_MS);
 }
 
 /// Точка входа DLL.
