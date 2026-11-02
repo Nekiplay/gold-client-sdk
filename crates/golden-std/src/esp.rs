@@ -37,6 +37,7 @@
 //! обвести своего. Всё это выключается [`Esp::enemies_only`].
 
 use core::ffi::c_void;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -95,6 +96,18 @@ static SCENE_HOOKED: AtomicBool = AtomicBool::new(false);
 static RENDER_MODEL_HOOKED: AtomicBool = AtomicBool::new(false);
 static ORIGINAL_PLAYER: AtomicUsize = AtomicUsize::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
+/// Счётчик кадров для профиля.
+static FRAMES: AtomicU64 = AtomicU64::new(0);
+/// Накопленное время перерисовки контуров, нс.
+static REPLAY_NANOS: AtomicU64 = AtomicU64::new(0);
+/// Накопленное время подписей, нс.
+static LABEL_NANOS: AtomicU64 = AtomicU64::new(0);
+/// Кэш текста подписей: имя и оружие читаются из интерфейса игры и стоят
+/// миллисекунды на игрока в каждом кадре.
+static LABEL_CACHE: Mutex<Option<HashMap<usize, (Instant, Option<String>, Option<String>)>>> =
+    Mutex::new(None);
+/// Сколько живёт запись кэша подписи.
+const LABEL_TTL: Duration = Duration::from_millis(400);
 static LABELS: AtomicU32 = AtomicU32::new(0);
 
 /// Команда локального игрока и когда её выясняли.
@@ -332,7 +345,9 @@ crate::hook! {
         if IN_REPLAY.load(Ordering::Acquire) {
             return;
         }
+        let started = Instant::now();
         labels_for_current_model();
+        LABEL_NANOS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 }
 
@@ -367,9 +382,18 @@ crate::hook! {
         original: scene_end_original
     {
         let _inside = InFlight::enter();
+        let started = Instant::now();
         unsafe { draw_replay() };
+        REPLAY_NANOS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
         render::flush_labels();
         unsafe { scene_end_original()() };
+        let frames = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+        if frames >= 120 {
+            let replay = REPLAY_NANOS.swap(0, Ordering::Relaxed) as f64 / 120.0 / 1e6;
+            let labels = LABEL_NANOS.swap(0, Ordering::Relaxed) as f64 / 120.0 / 1e6;
+            FRAMES.store(0, Ordering::Relaxed);
+            log!("esp: профиль кадра: обводка {replay:.2} мс, подписи {labels:.2} мс");
+        }
     }
 }
 
@@ -529,7 +553,26 @@ fn labels_for_current_model() {
         return;
     }
     let color = player_color(&renderer).unwrap_or(Color::WHITE);
-    let (above, below) = label(&player);
+    // Текст подписи берём из кэша: `label` читает имя и оружие из интерфейса
+    // игры, а это миллисекунды на игрока в каждом кадре (замер: 20 мс на кадр
+    // при пяти игроках). За четверть секунды они не меняются.
+    let key = entity.addr();
+    let cached = LABEL_CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.as_ref().and_then(|cache| cache.get(&key).cloned()))
+        .filter(|(at, _, _)| at.elapsed() < LABEL_TTL);
+    let (above, below) = match cached {
+        Some((_, above, below)) => (above, below),
+        None => {
+            let fresh = label(&player);
+            if let Ok(mut guard) = LABEL_CACHE.lock() {
+                let cache = guard.get_or_insert_with(HashMap::new);
+                cache.insert(key, (Instant::now(), fresh.0.clone(), fresh.1.clone()));
+            }
+            fresh
+        }
+    };
 
     // Углы AABB — края тела, а не ось: подпись у правого верхнего угла уезжает
     // вправо от головы. Берём середину по горизонтали.
