@@ -1,0 +1,17 @@
+[package]
+name = "example-console"
+description = "Пример: вывод в консоль Gold Client с цветом."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+# Внутри — символы с ABI `thiscall` (вызов приёмника консоли), поэтому тесты
+# гоняем только под i686: `cargo test --workspace` на x64 их не соберёт.
+test = false
+doctest = false
+
+[dependencies]
+golden-sdk = { workspace = true }
+golden-std = { workspace = true }

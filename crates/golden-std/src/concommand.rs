@@ -98,9 +98,14 @@ fn hw_address(offset: usize) -> Option<usize> {
 
 /// Пишет строку в консоль игры.
 ///
-/// Возвращает `false`, если `hw.dll` не найден. Перевод строки добавляется сам,
-/// поэтому звать можно по разу на строку.
+/// Сначала пробует консоль Gold Client (она живёт в `GameUI.dll` и не видит
+/// `Con_Printf`), затем — обычную печать движка. Перевод строки добавляется
+/// сам, поэтому звать можно по разу на строку. Возвращает `false`, если не
+/// вышло ни то, ни другое.
 pub fn print(text: &str) -> bool {
+    if golden_sdk::console::print(text) {
+        return true;
+    }
     let Some(target) = hw_address(CON_PRINTF_OFFSET) else {
         return false;
     };

@@ -24,6 +24,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-console"
+version = "0.1.0"
+dependencies = [
+ "golden-sdk",
+ "golden-std",
+]
+
+[[package]]
 name = "example-diagnostics"
 version = "0.1.0"
 dependencies = [
