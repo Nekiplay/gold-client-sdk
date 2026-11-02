@@ -37,7 +37,10 @@ pub extern "system" fn DllMain(module: *mut c_void, reason: u32, _reserved: *mut
 
 /// Стартовый сценарий: дождаться модулей, прогнать диагностику.
 fn bootstrap() {
-    golden_sdk::log!("example-diagnostics {} запускается", env!("CARGO_PKG_VERSION"));
+    golden_sdk::log!(
+        "example-diagnostics {} запускается",
+        env!("CARGO_PKG_VERSION")
+    );
     golden_sdk::log!("сборка смещений: {}", golden_sdk::BUILD);
 
     if !wait_for_modules(MODULE_WAIT) {
@@ -64,7 +67,8 @@ fn bootstrap() {
 fn wait_for_modules(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        if golden_sdk::process::hw_base().is_some() && golden_sdk::process::client_base().is_some() {
+        if golden_sdk::process::hw_base().is_some() && golden_sdk::process::client_base().is_some()
+        {
             return true;
         }
         if Instant::now() >= deadline {

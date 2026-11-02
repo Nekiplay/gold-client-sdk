@@ -6,15 +6,16 @@
 //!
 //! Путь к игре берётся из `GOLDCLIENT_DIR`, иначе — стандартная установка.
 
+use golden_sdk::Vec3;
 use golden_sdk::ballistics::{self, Material, Materials, Ray, Surface, Tracer};
 use golden_sdk::bsp::{Bsp, CONTENTS_EMPTY};
-use golden_sdk::Vec3;
 
 const MAP_NAME: &str = "de_dust2";
 
 /// Каталог игры: `GOLDCLIENT_DIR` (как в `golden-std::launch`), иначе стандартный.
 fn game_dir() -> std::path::PathBuf {
-    let dir = std::env::var("GOLDCLIENT_DIR").unwrap_or_else(|_| r"C:\Games\CS 1.6 GoldClient".into());
+    let dir =
+        std::env::var("GOLDCLIENT_DIR").unwrap_or_else(|_| r"C:\Games\CS 1.6 GoldClient".into());
     std::path::PathBuf::from(dir)
 }
 
@@ -41,7 +42,8 @@ fn spawns(bytes: &[u8]) -> Vec<Vec3> {
                     let mut numbers = value
                         .split_whitespace()
                         .filter_map(|part| part.parse::<f32>().ok());
-                    if let (Some(x), Some(y), Some(z)) = (numbers.next(), numbers.next(), numbers.next())
+                    if let (Some(x), Some(y), Some(z)) =
+                        (numbers.next(), numbers.next(), numbers.next())
                     {
                         origin = Some(Vec3::new(x, y, z));
                     }
@@ -106,7 +108,10 @@ fn traces_real_map() {
     };
     let bsp = Bsp::parse(&bytes).expect("разбор");
 
-    let materials_file = game_dir().join("cstrike").join("sound").join("materials.txt");
+    let materials_file = game_dir()
+        .join("cstrike")
+        .join("sound")
+        .join("materials.txt");
     let materials = std::fs::read_to_string(&materials_file)
         .map(|text| Materials::parse(&text))
         .unwrap_or_else(|_| Materials::empty());
@@ -151,7 +156,10 @@ fn traces_real_map() {
     // Луч от спавна через карту обязан во что-то попасть.
     let start = points[0] + Vec3::new(0.0, 0.0, 36.0);
     let across = bsp.trace(start, start + Vec3::new(4000.0, 0.0, 0.0));
-    println!("от спавна по оси X: {:.3} → {:?}", across.fraction, across.end);
+    println!(
+        "от спавна по оси X: {:.3} → {:?}",
+        across.fraction, across.end
+    );
     assert!(across.hit());
 
     // Сквозь стены до последнего спавна: сколько поверхностей и сколько урона.
@@ -172,7 +180,10 @@ fn traces_real_map() {
             shot.damage.map(|damage| damage.damage),
             &shot.after_walls[..walls]
         );
-        assert!(shot.walls > 0, "{name} прошёл сквозь карту без единой стены");
+        assert!(
+            shot.walls > 0,
+            "{name} прошёл сквозь карту без единой стены"
+        );
     }
     let _ = ak;
 }

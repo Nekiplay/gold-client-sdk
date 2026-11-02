@@ -163,9 +163,7 @@ impl ConCommand {
         };
         // SAFETY: `g_pCVar` читается из .data движка тем же способом, что и
         // `ConCommandBase::Add`; нулевое значение значит «консоль ещё не встала».
-        let cvar = unsafe {
-            core::ptr::read_unaligned((base + hw::G_P_CVAR) as *const *mut u8)
-        };
+        let cvar = unsafe { core::ptr::read_unaligned((base + hw::G_P_CVAR) as *const *mut u8) };
         if cvar.is_null() {
             return Err(CommandError::NoCVar);
         }
@@ -207,13 +205,7 @@ impl ConCommand {
     ///
     /// # Safety
     /// `base` — адрес загруженного `hw.dll`, страница команды выделена.
-    unsafe fn fill(
-        &mut self,
-        name: &str,
-        help: &str,
-        callback: CommandCallback,
-        base: usize,
-    ) {
+    unsafe fn fill(&mut self, name: &str, help: &str, callback: CommandCallback, base: usize) {
         let template = (base + hw::CON_COMMAND_TEMPLATE) as *const u8;
         // SAFETY: `cmdlist` — статический объект движка, инициализируется при
         // старте консоли и живёт до конца процесса.
@@ -238,7 +230,10 @@ impl ConCommand {
         unsafe {
             // Звено списка и флаг регистрации — свои, иначе движок решит, что
             // команда уже зарегистрирована, и попадёт в чужой список.
-            core::ptr::write_unaligned(self.object.add(0x04) as *mut *mut u8, core::ptr::null_mut());
+            core::ptr::write_unaligned(
+                self.object.add(0x04) as *mut *mut u8,
+                core::ptr::null_mut(),
+            );
             *self.object.add(0x08) = 0;
             core::ptr::write_unaligned(self.object.add(0x0C) as *mut *const u8, name_at);
             core::ptr::write_unaligned(self.object.add(0x10) as *mut *const u8, help_at);

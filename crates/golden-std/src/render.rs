@@ -288,7 +288,13 @@ impl Overlay {
     }
 
     /// Скелет модели — по костям, которые движок только что посчитал.
-    pub fn skeleton(&self, renderer: &StudioRenderer, model: &StudioModel, color: Color, width: f32) {
+    pub fn skeleton(
+        &self,
+        renderer: &StudioRenderer,
+        model: &StudioModel,
+        color: Color,
+        width: f32,
+    ) {
         let segments = renderer.skeleton_lines_checked(model);
         self.xray(&segments, color, width);
     }
@@ -306,8 +312,15 @@ impl Overlay {
             return;
         };
         unsafe {
-            self.gl
-                .ring(center, renderer.view_right(), renderer.view_up(), radius, color, width, 16);
+            self.gl.ring(
+                center,
+                renderer.view_right(),
+                renderer.view_up(),
+                radius,
+                color,
+                width,
+                16,
+            );
         }
     }
 
@@ -318,17 +331,34 @@ impl Overlay {
 
     /// Подпись у мировой точки. `above` — над точкой, иначе под ней.
     pub fn label(&self, world: Vec3, text: &str, color: Color, above: bool) {
-        let Some(pos) = self.project(world) else {
-            return;
-        };
+        self.labels_at(&[(world, text, color)], above);
+    }
+
+    /// Несколько подписей за один проход отрисовки.
+    ///
+    /// Проекция считается здесь, а текст рисуется общим состоянием GL: когда
+    /// подписей много (по одной на каждого игрока в радиусе взрыва), отдельный
+    /// проход на каждую заметно роняет кадры.
+    pub fn labels_at(&self, items: &[(Vec3, &str, Color)], above: bool) {
         let scale = self.text_scale;
         let offset = if above {
             -(draw::text_height(scale) + 6.0)
         } else {
             8.0
         };
-        let x = pos.x - draw::text_width(text, scale) / 2.0;
-        unsafe { self.gl.text(x, pos.y + offset, text, color, scale) }
+        let mut placed: Vec<(f32, f32, &str, Color)> = Vec::with_capacity(items.len());
+        for (world, text, color) in items {
+            let Some(pos) = self.project(*world) else {
+                continue;
+            };
+            let x = pos.x - draw::text_width(text, scale) / 2.0;
+            placed.push((x, pos.y + offset, text, *color));
+        }
+        if placed.is_empty() {
+            return;
+        }
+        // SAFETY: контракт `Gl::texts` — рендер-поток с активным GL.
+        unsafe { self.gl.texts(&placed, scale) }
     }
 }
 /// Сколько подписей может копиться за кадр.
@@ -392,12 +422,11 @@ pub fn flush_labels() {
     let Some(overlay) = Overlay::new() else {
         return;
     };
-    for item in items {
-        // SAFETY: вызывающий гарантирует активный GL-контекст.
-        unsafe {
-            overlay
-                .gl
-                .text(item.x, item.y, &item.text, item.color, item.scale)
-        }
-    }
+    let scale = items[0].scale;
+    let placed: Vec<(f32, f32, &str, Color)> = items
+        .iter()
+        .map(|item| (item.x, item.y, item.text.as_str(), item.color))
+        .collect();
+    // SAFETY: вызывающий гарантирует активный GL-контекст.
+    unsafe { overlay.gl.texts(&placed, scale) }
 }

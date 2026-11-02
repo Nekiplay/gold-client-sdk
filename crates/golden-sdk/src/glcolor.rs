@@ -333,9 +333,7 @@ unsafe extern "stdcall" fn color3ub(r: u8, g: u8, b: u8) {
     // SAFETY: `addr` — экспорт `opengl32!glColor3ub`.
     let f: unsafe extern "stdcall" fn(u8, u8, u8) = unsafe { core::mem::transmute(addr) };
     match forced() {
-        Some((r, g, b)) => unsafe {
-            f((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
-        },
+        Some((r, g, b)) => unsafe { f((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8) },
         None => unsafe { f(r, g, b) },
     }
 }

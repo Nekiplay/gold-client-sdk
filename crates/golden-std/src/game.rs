@@ -45,7 +45,10 @@ impl Game {
     /// # }
     /// ```
     pub fn get_players(&self) -> Players {
-        Players { game: *self, next: -1 }
+        Players {
+            game: *self,
+            next: -1,
+        }
     }
 
     /// Игрок по номеру сущности.
@@ -188,7 +191,8 @@ impl Entity {
 
     /// Модель игрока, а не оружия/пропа.
     pub fn is_player_model(&self) -> bool {
-        self.studio_model().is_some_and(|model| model.is_player_model())
+        self.studio_model()
+            .is_some_and(|model| model.is_player_model())
     }
 
     /// Путь модели из `model_t`: `maps/de_dust2.bsp`, `*3` у brush-модели.
@@ -409,7 +413,9 @@ impl Player {
 
     /// Имя команды как его пишет сервер: `TERRORIST`, `CT`, `UNASSIGNED`.
     pub fn team_name(&self) -> String {
-        self.extra().map(|extra| extra.team_name()).unwrap_or_default()
+        self.extra()
+            .map(|extra| extra.team_name())
+            .unwrap_or_default()
     }
 
     /// Цвет команды для отрисовки; `None` — команда неизвестна.
@@ -419,7 +425,9 @@ impl Player {
 
     /// Позиция в мире.
     pub fn origin(&self) -> Vec3 {
-        self.entity.map(|entity| entity.origin()).unwrap_or(Vec3::ZERO)
+        self.entity
+            .map(|entity| entity.origin())
+            .unwrap_or(Vec3::ZERO)
     }
 
     /// Имя модели тела.

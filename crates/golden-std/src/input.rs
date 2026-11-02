@@ -259,7 +259,12 @@ mod platform {
                 return 1;
             }
             // Служебные окна движка крошечные: отличаем их по клиентской области.
-            let mut rect = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+            let mut rect = Rect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
             if GetClientRect(window, &mut rect) == 0 {
                 return 1;
             }
@@ -378,7 +383,8 @@ pub fn install() -> Result<(), InputError> {
     let base = process::hw_base().ok_or(InputError::NoEngine)?;
     // SAFETY: `base + KEY_EVENT` — начало `Key_Event` этого движка; наш хук
     // объявлен с тем же соглашением (`__fastcall`, `int, int`).
-    let detour = unsafe { Detour::new(base + offsets::hw::KEY_EVENT, hook_key_event as *const ()) }?;
+    let detour =
+        unsafe { Detour::new(base + offsets::hw::KEY_EVENT, hook_key_event as *const ()) }?;
     detour.enable()?;
 
     ORIGINAL.store(detour.trampoline() as usize, Ordering::Release);

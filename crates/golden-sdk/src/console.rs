@@ -207,10 +207,7 @@ impl Color {
 
     /// Машинное слово движка для этого цвета.
     pub const fn bits(self) -> u32 {
-        self.r as u32
-            | (self.g as u32) << 8
-            | (self.b as u32) << 16
-            | (self.a as u32) << 24
+        self.r as u32 | (self.g as u32) << 8 | (self.b as u32) << 16 | (self.a as u32) << 24
     }
 
     /// Белый — цвет обычного вывода движка.
@@ -388,9 +385,15 @@ impl Writer {
             history,
             default: Color::from_bits(default),
             // SAFETY: сигнатуры проверены по прологу и совпадают с этой сборкой.
-            set: unsafe { core::mem::transmute::<usize, unsafe extern "thiscall" fn(*mut c_void, u32)>(set) },
+            set: unsafe {
+                core::mem::transmute::<usize, unsafe extern "thiscall" fn(*mut c_void, u32)>(set)
+            },
             // SAFETY: то же для приёмника строк.
-            add: unsafe { core::mem::transmute::<usize, unsafe extern "thiscall" fn(*mut c_void, *const u8)>(add) },
+            add: unsafe {
+                core::mem::transmute::<usize, unsafe extern "thiscall" fn(*mut c_void, *const u8)>(
+                    add,
+                )
+            },
         })
     }
 

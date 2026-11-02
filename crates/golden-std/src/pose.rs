@@ -106,12 +106,7 @@ impl PoseCache {
     /// кости в памяти принадлежат другому игроку.
     ///
     /// `false`, если кости ещё не посчитаны или не конечны.
-    pub fn capture(
-        &self,
-        entity: usize,
-        renderer: &StudioRenderer,
-        model: &StudioModel,
-    ) -> bool {
+    pub fn capture(&self, entity: usize, renderer: &StudioRenderer, model: &StudioModel) -> bool {
         if entity == 0 {
             return false;
         }
@@ -122,7 +117,8 @@ impl PoseCache {
         // позицией сущности в пределах шага. Матрицы, посчитанные для
         // вьюмодели оружия (руки от первого лица), лежат у камеры, и подписи по
         // ним уезжают в середину экрана — такую позу не запоминаем.
-        let Some(origin) = golden_sdk::engine::EntityRef::from_raw(entity).map(|e| e.origin()) else {
+        let Some(origin) = golden_sdk::engine::EntityRef::from_raw(entity).map(|e| e.origin())
+        else {
             return false;
         };
         if origins[0].distance_to(origin) > POSE_MAX_ROOT_OFFSET {

@@ -80,26 +80,50 @@ fn inject(pid: u32, dll: &str) -> Result<(), String> {
     // SAFETY: все вызовы Win32 ниже — с проверкой результатов; буфер живёт до конца.
     unsafe {
         let process = OpenProcess(
-            PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE,
+            PROCESS_CREATE_THREAD
+                | PROCESS_QUERY_INFORMATION
+                | PROCESS_VM_OPERATION
+                | PROCESS_VM_WRITE,
             0,
             pid,
         );
         if process.is_null() {
-            return Err(format!("OpenProcess({pid}): {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "OpenProcess({pid}): {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
-        let remote = VirtualAllocEx(process, std::ptr::null(), bytes.len(), MEM_COMMIT, PAGE_READWRITE);
+        let remote = VirtualAllocEx(
+            process,
+            std::ptr::null(),
+            bytes.len(),
+            MEM_COMMIT,
+            PAGE_READWRITE,
+        );
         if remote.is_null() {
             CloseHandle(process);
-            return Err(format!("VirtualAllocEx: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "VirtualAllocEx: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let mut written = 0usize;
-        let ok = WriteProcessMemory(process, remote, bytes.as_ptr().cast(), bytes.len(), &mut written);
+        let ok = WriteProcessMemory(
+            process,
+            remote,
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            &mut written,
+        );
         if ok == 0 || written != bytes.len() {
             VirtualFreeEx(process, remote, 0, MEM_RELEASE);
             CloseHandle(process);
-            return Err(format!("WriteProcessMemory: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "WriteProcessMemory: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let kernel32 = GetModuleHandleA(c"kernel32.dll".as_ptr().cast());
@@ -125,7 +149,10 @@ fn inject(pid: u32, dll: &str) -> Result<(), String> {
         if thread.is_null() {
             VirtualFreeEx(process, remote, 0, MEM_RELEASE);
             CloseHandle(process);
-            return Err(format!("CreateRemoteThread: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "CreateRemoteThread: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let wait = WaitForSingleObject(thread, 15_000);

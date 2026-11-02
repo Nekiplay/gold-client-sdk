@@ -107,6 +107,31 @@ overlay.on_draw_model(|model| {
 });
 ```
 
+## Гранаты: траектория и точка взрыва
+
+`golden_sdk::grenade` повторяет формулы сервера, а не «красивую физику»:
+углы и скорость броска из `WeaponIdle`, полёт с отскоками из
+`SV_Physics_Bounce`, точку срабатывания из `CGrenade::Detonate`, урон из
+`RadiusDamage` и ослепление из `RadiusFlash`.
+
+```rust
+use golden_sdk::grenade::{Kind, he_damage, flash_list, simulate, throw_velocity};
+
+let velocity = throw_velocity(view_angles, player_velocity);
+let flight = simulate(Kind::He, throw_origin(eye, view_angles), velocity, |from, to| {
+    map_bsp.trace(from, to).map(Into::into)
+});
+let victims = he_damage(flight.explosion, &targets);
+```
+
+`golden_std::grenade::predict(kind)` подставляет в эти формулы живое
+состояние игры: глаза и скорость локального игрока, позиции и углы остальных,
+трассировку по текущей карте. Возвращает `Prediction` с траекторией, уроном и
+списком ослеплённых.
+
+Пример `examples/grenade` рисует траекторию в конце 3D-сцены и печатает отчёт
+по командам `grenade_he` / `grenade_flash`; `grenade_off` выключает отрисовку.
+
 Своя консольная команда — со своим выводом и без мусора в консоли:
 
 ```rust
@@ -142,6 +167,7 @@ golden_std::unload::defer_unload(300);
 | `examples/hitboxes` | Хитбоксы игроков по нарисованной позе: боксы строятся в перехвате отрисовки модели, по тем же матрицам костей, из которых движок строит hull для трассировки выстрела. |
 | `examples/diagnostics` | Счётчики и проверки состояния движка. |
 | `examples/console` | Вывод в консоль Gold Client: цветной отчёт билдером, обычная строка и своя команда. |
+| `examples/grenade` | Траектория гранаты и точка взрыва: для HE — урон по игрокам, для флешки — кого и на сколько ослепит. Формулы сервера в `golden_sdk::grenade`, состояние игры — в `golden_std::grenade`. |
 
 ## Стенд: запуск игры с ботами
 

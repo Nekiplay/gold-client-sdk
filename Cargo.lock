@@ -49,6 +49,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-grenade"
+version = "0.1.0"
+dependencies = [
+ "golden-sdk",
+ "golden-std",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "example-hitboxes"
 version = "0.1.0"
 dependencies = [

@@ -39,8 +39,7 @@ pub const MAX_CLEANUPS: usize = 32;
 
 /// Реестр очисток. Массив, а не `Vec`: SDK не обязан аллоцировать ради пары
 /// функций, а переполнение просто означает «отказано».
-static CLEANUPS: SpinLock<[Option<Cleanup>; MAX_CLEANUPS]> =
-    SpinLock::new([None; MAX_CLEANUPS]);
+static CLEANUPS: SpinLock<[Option<Cleanup>; MAX_CLEANUPS]> = SpinLock::new([None; MAX_CLEANUPS]);
 
 /// Очистки уже выполнены — повторный вызов ничего не делает.
 static RAN: AtomicBool = AtomicBool::new(false);

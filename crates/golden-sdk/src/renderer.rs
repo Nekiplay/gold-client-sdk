@@ -1,4 +1,4 @@
-﻿//! Доступ к клиентскому рендереру студийных моделей.
+//! Доступ к клиентскому рендереру студийных моделей.
 //!
 //! Объект `CStudioModelRenderer` (`client.dll + 0x1F51C8`) — то самое место, где
 //! после каждого кадра лежат готовые матрицы костей нарисованной модели. Читать
@@ -14,15 +14,13 @@
 
 use alloc::vec::Vec;
 
-use core::ffi::{c_void, CStr};
+use core::ffi::{CStr, c_void};
 
 use crate::engine::EntityRef;
 use crate::math::Vec3;
 use crate::offsets::{client, hw, renderer};
 use crate::process;
-use crate::studio::{
-    BoneMatrix, HitGroup, StudioHeader, StudioModel, WorldHitbox, MAXSTUDIOBONES,
-};
+use crate::studio::{BoneMatrix, HitGroup, MAXSTUDIOBONES, StudioHeader, StudioModel, WorldHitbox};
 
 /// Слот vtable, который рисует геометрию модели.
 ///
@@ -176,7 +174,9 @@ impl StudioRenderer {
     /// Глобальный объект клиента или `None`, если клиент ещё не загружен.
     pub fn global() -> Option<Self> {
         let base = process::client_base()?;
-        Some(Self { ptr: (base + client::STUDIO_RENDERER) as *mut u8 })
+        Some(Self {
+            ptr: (base + client::STUDIO_RENDERER) as *mut u8,
+        })
     }
 
     pub fn addr(&self) -> usize {
@@ -303,7 +303,8 @@ impl StudioRenderer {
     /// `StudioSetupBones`, поэтому читать его нужно сразу после отрисовки модели.
     pub fn bone_matrix_base(&self) -> Option<*const BoneMatrix> {
         // SAFETY: объект статический.
-        let ptr: *const BoneMatrix = unsafe { process::read(self.addr() + renderer::BONE_TRANSFORM) };
+        let ptr: *const BoneMatrix =
+            unsafe { process::read(self.addr() + renderer::BONE_TRANSFORM) };
         (!ptr.is_null()).then_some(ptr)
     }
 
@@ -319,7 +320,8 @@ impl StudioRenderer {
         // посчитано не от базы модуля, адрес уйдёт в пустоту, и чтение матриц
         // уронит игру. Проверяем границы обоих концов.
         let end = start + MAXSTUDIOBONES * core::mem::size_of::<BoneMatrix>() - 1;
-        (process::is_readable(start) && process::is_readable(end)).then_some(start as *const BoneMatrix)
+        (process::is_readable(start) && process::is_readable(end))
+            .then_some(start as *const BoneMatrix)
     }
 
     /// Позиция кости в мире, если кость есть в модели.
@@ -530,7 +532,11 @@ impl StudioRenderer {
     ///
     /// Нужно, чтобы пересчитать хитбоксы по буферу движка
     /// ([`Self::trace_bones`]) — по нему считает попадание трассировка.
-    pub fn hitboxes_world_from(&self, model: &StudioModel, base: *const BoneMatrix) -> Vec<WorldHitbox> {
+    pub fn hitboxes_world_from(
+        &self,
+        model: &StudioModel,
+        base: *const BoneMatrix,
+    ) -> Vec<WorldHitbox> {
         let bones = model.bones().len();
         // Движок пропускает бокс оружия в руках: в `hw.dll+0x92930` перебор идёт
         // с условием `local_20 != 0x14`. Но на кастомных моделях номер бокса
@@ -583,8 +589,16 @@ impl StudioRenderer {
         let mut max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
         let mut any = false;
         for hitbox in self.hitboxes_world(model) {
-            min = Vec3::new(min.x.min(hitbox.min.x), min.y.min(hitbox.min.y), min.z.min(hitbox.min.z));
-            max = Vec3::new(max.x.max(hitbox.max.x), max.y.max(hitbox.max.y), max.z.max(hitbox.max.z));
+            min = Vec3::new(
+                min.x.min(hitbox.min.x),
+                min.y.min(hitbox.min.y),
+                min.z.min(hitbox.min.z),
+            );
+            max = Vec3::new(
+                max.x.max(hitbox.max.x),
+                max.y.max(hitbox.max.y),
+                max.z.max(hitbox.max.z),
+            );
             any = true;
         }
         (any && min.is_finite() && max.is_finite()).then_some((min, max))
@@ -605,9 +619,21 @@ impl StudioRenderer {
         let mut max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
         for corner in 0..8 {
             let local = Vec3::new(
-                if corner & 1 == 0 { hitbox.bbmin.x } else { hitbox.bbmax.x },
-                if corner & 2 == 0 { hitbox.bbmin.y } else { hitbox.bbmax.y },
-                if corner & 4 == 0 { hitbox.bbmin.z } else { hitbox.bbmax.z },
+                if corner & 1 == 0 {
+                    hitbox.bbmin.x
+                } else {
+                    hitbox.bbmax.x
+                },
+                if corner & 2 == 0 {
+                    hitbox.bbmin.y
+                } else {
+                    hitbox.bbmax.y
+                },
+                if corner & 4 == 0 {
+                    hitbox.bbmin.z
+                } else {
+                    hitbox.bbmax.z
+                },
             );
             let world = matrix.transform_point(local);
             if !world.is_finite() {
@@ -696,7 +722,11 @@ impl StudioRenderer {
             .unwrap_or(0);
         let entity_state = entity.map(|e| e.model_state()).unwrap_or(-1);
 
-        let header_ptr = if studio_header != 0 { studio_header } else { entity_header };
+        let header_ptr = if studio_header != 0 {
+            studio_header
+        } else {
+            entity_header
+        };
         let (header_id, header_version, header_bones) = if process::is_readable(header_ptr) {
             // SAFETY: заголовок читаем, поля лежат в начале структуры.
             unsafe {

@@ -612,6 +612,13 @@ pub mod entity {
     /// ✔ Позиция в мире.
     pub const ORIGIN: usize = 0xB48;
 
+    /// Углы поворота сущности в градусах — сразу за [`ORIGIN`].
+    ///
+    /// В `cl_entity_t` `origin` и `angles` идут подряд; здесь это
+    /// `0xB48 + 12 = 0xB54`. Используется для направления взгляда чужих
+    /// игроков: сетевой `entity_state` в Gold Client для них непригоден.
+    pub const ANGLES: usize = 0xB54;
+
     /// ✔ `model_t *` — модель тела. Заголовок читается из [`super::model::EXTRADATA`].
     pub const MODEL: usize = 0xB94;
 

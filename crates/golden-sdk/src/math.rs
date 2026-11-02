@@ -18,7 +18,11 @@ pub struct Vec3 {
 }
 
 impl Vec3 {
-    pub const ZERO: Self = Self { x: 0.0, y: 0.0, z: 0.0 };
+    pub const ZERO: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
 
     pub const fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
@@ -99,13 +103,19 @@ impl Fov {
     /// `default_fov` / `fov` движка).
     pub fn from_horizontal(fov_x_deg: f32, aspect: f32) -> Self {
         let tan_y = (fov_x_deg.to_radians() * 0.5).tan() * 0.75;
-        Self { tan_x: tan_y * aspect, tan_y }
+        Self {
+            tan_x: tan_y * aspect,
+            tan_y,
+        }
     }
 
     /// Из вертикального FOV.
     pub fn from_vertical(fov_y_deg: f32, aspect: f32) -> Self {
         let tan_y = (fov_y_deg.to_radians() * 0.5).tan();
-        Self { tan_x: tan_y * aspect, tan_y }
+        Self {
+            tan_x: tan_y * aspect,
+            tan_y,
+        }
     }
 
     /// Горизонтальный FOV в градусах (для логов).
@@ -133,7 +143,12 @@ pub struct Camera {
 
 impl Camera {
     pub fn new(origin: Vec3, forward: Vec3, right: Vec3, up: Vec3) -> Self {
-        Self { origin, forward, right, up }
+        Self {
+            origin,
+            forward,
+            right,
+            up,
+        }
     }
 
     /// Проекция точки мира в пиксели экрана. `None`, если точка за камерой.
@@ -170,14 +185,24 @@ mod tests {
     fn fov_matches_engine_convention() {
         let fov = Fov::from_horizontal(90.0, 16.0 / 9.0);
         assert!((fov.tan_y - 0.75).abs() < 1e-6, "tan_y = {}", fov.tan_y);
-        assert!((fov.vertical_deg() - 73.739_79).abs() < 1e-3, "{}", fov.vertical_deg());
-        assert!((fov.horizontal_deg() - 106.260_21).abs() < 1e-3, "{}", fov.horizontal_deg());
+        assert!(
+            (fov.vertical_deg() - 73.739_79).abs() < 1e-3,
+            "{}",
+            fov.vertical_deg()
+        );
+        assert!(
+            (fov.horizontal_deg() - 106.260_21).abs() < 1e-3,
+            "{}",
+            fov.horizontal_deg()
+        );
     }
 
     #[test]
     fn point_ahead_lands_in_center() {
         let fov = Fov::from_horizontal(90.0, 16.0 / 9.0);
-        let p = IDENTITY.project(Vec3::new(0.0, 0.0, 100.0), fov, (1280.0, 720.0)).unwrap();
+        let p = IDENTITY
+            .project(Vec3::new(0.0, 0.0, 100.0), fov, (1280.0, 720.0))
+            .unwrap();
         assert!((p.x - 640.0).abs() < 1e-3);
         assert!((p.y - 360.0).abs() < 1e-3);
     }
@@ -185,14 +210,20 @@ mod tests {
     #[test]
     fn point_behind_camera_is_culled() {
         let fov = Fov::from_horizontal(90.0, 16.0 / 9.0);
-        assert!(IDENTITY.project(Vec3::new(0.0, 0.0, -5.0), fov, (1280.0, 720.0)).is_none());
+        assert!(
+            IDENTITY
+                .project(Vec3::new(0.0, 0.0, -5.0), fov, (1280.0, 720.0))
+                .is_none()
+        );
     }
 
     #[test]
     fn right_edge_matches_tan_x() {
         let fov = Fov::from_horizontal(90.0, 16.0 / 9.0);
         // На дистанции 1 единица по right при tan_x = 1.333 точка уходит за край 16:9.
-        let p = IDENTITY.project(Vec3::new(fov.tan_x, 0.0, 1.0), fov, (1280.0, 720.0)).unwrap();
+        let p = IDENTITY
+            .project(Vec3::new(fov.tan_x, 0.0, 1.0), fov, (1280.0, 720.0))
+            .unwrap();
         assert!((p.x - 1280.0).abs() < 1e-2, "x = {}", p.x);
     }
 

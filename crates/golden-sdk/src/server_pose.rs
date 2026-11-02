@@ -121,7 +121,9 @@ pub unsafe fn setup_bones(model: *mut c_void, state: &AnimState) -> bool {
     // пределы. Смещение берётся от базы модуля (в Ghidra тот же буфер —
     // `0x129F2A58`).
     let bones = base + hw::TRACE_BONES;
-    let last = bones + crate::studio::MAXSTUDIOBONES * core::mem::size_of::<crate::studio::BoneMatrix>() - 1;
+    let last = bones
+        + crate::studio::MAXSTUDIOBONES * core::mem::size_of::<crate::studio::BoneMatrix>()
+        - 1;
     if !process::is_readable(bones) || !process::is_readable(last) {
         return false;
     }

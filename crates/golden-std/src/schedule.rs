@@ -105,7 +105,12 @@ pub struct Scheduler {
 impl Scheduler {
     /// Пустая очередь.
     pub const fn new() -> Self {
-        Self { pending: Vec::new(), held: Vec::new(), frames: 0, applied: 0 }
+        Self {
+            pending: Vec::new(),
+            held: Vec::new(),
+            frames: 0,
+            applied: 0,
+        }
     }
 
     // --- командный буфер ---
@@ -239,7 +244,10 @@ impl Scheduler {
     }
 
     fn push_time(&mut self, delay: Duration, action: Action) {
-        self.pending.push(Pending { due: Due::At(Instant::now() + delay), action });
+        self.pending.push(Pending {
+            due: Due::At(Instant::now() + delay),
+            action,
+        });
     }
 
     fn push_frame(&mut self, frames: u32, action: Action) {
@@ -428,7 +436,11 @@ mod tests {
     #[test]
     fn key_block_queues_block_and_unblock() {
         let mut scheduler = Scheduler::new();
-        scheduler.block_key_for(Duration::from_millis(50), input::VK_SPACE, Duration::from_millis(200));
+        scheduler.block_key_for(
+            Duration::from_millis(50),
+            input::VK_SPACE,
+            Duration::from_millis(200),
+        );
         assert_eq!(scheduler.len(), 2);
         assert_eq!(scheduler.tick(), 0);
         assert!(scheduler.held_keys().is_empty());

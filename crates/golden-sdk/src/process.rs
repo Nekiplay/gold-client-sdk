@@ -20,9 +20,8 @@ pub fn module_base(name: &str) -> Option<usize> {
     buf[..bytes.len()].copy_from_slice(bytes);
 
     // SAFETY: строка NUL-терминирована (буфер нулевой), вызов только читает.
-    let handle = unsafe {
-        windows_sys::Win32::System::LibraryLoader::GetModuleHandleA(buf.as_ptr())
-    };
+    let handle =
+        unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleA(buf.as_ptr()) };
     (!handle.is_null()).then_some(handle as usize)
 }
 
@@ -91,14 +90,12 @@ pub unsafe fn module_size(base: usize) -> Option<usize> {
 /// Нужно, чтобы правка таблицы указателей не задела код: значения там могут
 /// случайно совпасть с адресом GL-функции, а запись в `.text` — это порча.
 pub fn is_writable(addr: usize) -> bool {
-    use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION};
+    use windows_sys::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, VirtualQuery};
 
     let mut info: MEMORY_BASIC_INFORMATION = unsafe { core::mem::zeroed() };
     let size = core::mem::size_of::<MEMORY_BASIC_INFORMATION>();
     // SAFETY: `info` — валидный буфер нужного размера.
-    let written = unsafe {
-        VirtualQuery(addr as *const c_void, &mut info, size)
-    };
+    let written = unsafe { VirtualQuery(addr as *const c_void, &mut info, size) };
     if written == 0 {
         return false;
     }
@@ -188,14 +185,24 @@ pub fn is_readable(addr: usize) -> bool {
     const PAGE_EXECUTE_WRITECOPY: u32 = 0x80;
     const PAGE_GUARD: u32 = 0x100;
 
-    let readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ
-        | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    let readable = PAGE_READONLY
+        | PAGE_READWRITE
+        | PAGE_WRITECOPY
+        | PAGE_EXECUTE_READ
+        | PAGE_EXECUTE_READWRITE
+        | PAGE_EXECUTE_WRITECOPY;
     if addr == 0 {
         return false;
     }
     let mut info = core::mem::MaybeUninit::<MEMORY_BASIC_INFORMATION>::zeroed();
     // SAFETY: структура и её размер переданы корректно, вызов только читает.
-    let written = unsafe { VirtualQuery(addr as *const core::ffi::c_void, info.as_mut_ptr(), core::mem::size_of::<MEMORY_BASIC_INFORMATION>()) };
+    let written = unsafe {
+        VirtualQuery(
+            addr as *const core::ffi::c_void,
+            info.as_mut_ptr(),
+            core::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
     if written == 0 {
         return false;
     }

@@ -107,7 +107,8 @@ impl PlayerExtra {
             return None;
         }
         let base = crate::process::client_base()?;
-        let addr = base + crate::offsets::client::PLAYER_EXTRA_INFO
+        let addr = base
+            + crate::offsets::client::PLAYER_EXTRA_INFO
             + index as usize * crate::offsets::client::PLAYER_EXTRA_STRIDE;
         crate::process::is_readable(addr).then_some(Self { addr })
     }
@@ -126,8 +127,11 @@ impl PlayerExtra {
     /// Имя команды из сообщения `TeamInfo` (`"CT"`, `"TERRORIST"`, `"SPECTATOR"`).
     pub fn team_name(&self) -> String {
         // SAFETY: не нужно — `read_cstr` сам проверяет читаемость страниц.
-        crate::process::read_cstr(self.addr + crate::offsets::client::PLAYER_EXTRA_TEAMNAME, 16)
-            .unwrap_or_default()
+        crate::process::read_cstr(
+            self.addr + crate::offsets::client::PLAYER_EXTRA_TEAMNAME,
+            16,
+        )
+        .unwrap_or_default()
     }
 
     /// Байт-флаг внутри записи.
@@ -227,7 +231,10 @@ pub fn is_player_model_name(name: &str) -> bool {
     if stem.starts_with("v_") || stem.starts_with("w_") {
         return false;
     }
-    if name.split(['/', '\\']).any(|p| p.eq_ignore_ascii_case("player")) {
+    if name
+        .split(['/', '\\'])
+        .any(|p| p.eq_ignore_ascii_case("player"))
+    {
         return true;
     }
     model_dir(name).is_some_and(|dir| dir.eq_ignore_ascii_case(&stem))
@@ -306,14 +313,38 @@ mod tests {
 
     #[test]
     fn team_comes_from_model() {
-        assert_eq!(Team::from_model_name("terror\\terror.mdl"), Some(Team::Terrorist));
-        assert_eq!(Team::from_model_name("models/player/leet/leet.mdl"), Some(Team::Terrorist));
-        assert_eq!(Team::from_model_name("arctic\\arctic.mdl"), Some(Team::Terrorist));
-        assert_eq!(Team::from_model_name("guerilla\\guerilla.mdl"), Some(Team::Terrorist));
-        assert_eq!(Team::from_model_name("urban\\urban.mdl"), Some(Team::CounterTerrorist));
-        assert_eq!(Team::from_model_name("gsg9\\gsg9.mdl"), Some(Team::CounterTerrorist));
-        assert_eq!(Team::from_model_name("sas\\sas.mdl"), Some(Team::CounterTerrorist));
-        assert_eq!(Team::from_model_name("gign\\gign.mdl"), Some(Team::CounterTerrorist));
+        assert_eq!(
+            Team::from_model_name("terror\\terror.mdl"),
+            Some(Team::Terrorist)
+        );
+        assert_eq!(
+            Team::from_model_name("models/player/leet/leet.mdl"),
+            Some(Team::Terrorist)
+        );
+        assert_eq!(
+            Team::from_model_name("arctic\\arctic.mdl"),
+            Some(Team::Terrorist)
+        );
+        assert_eq!(
+            Team::from_model_name("guerilla\\guerilla.mdl"),
+            Some(Team::Terrorist)
+        );
+        assert_eq!(
+            Team::from_model_name("urban\\urban.mdl"),
+            Some(Team::CounterTerrorist)
+        );
+        assert_eq!(
+            Team::from_model_name("gsg9\\gsg9.mdl"),
+            Some(Team::CounterTerrorist)
+        );
+        assert_eq!(
+            Team::from_model_name("sas\\sas.mdl"),
+            Some(Team::CounterTerrorist)
+        );
+        assert_eq!(
+            Team::from_model_name("gign\\gign.mdl"),
+            Some(Team::CounterTerrorist)
+        );
         assert_eq!(Team::from_model_name("v_m4a1.mdl"), None);
         assert_eq!(Team::from_model_name("custom\\custom.mdl"), None);
     }

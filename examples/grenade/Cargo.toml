@@ -1,0 +1,16 @@
+[package]
+name = "example-grenade"
+description = "Пример: траектория гранаты, точка взрыва, урон HE и список ослеплённых флешкой."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+test = false
+doctest = false
+
+[dependencies]
+golden-sdk = { workspace = true }
+golden-std = { workspace = true }
+windows-sys = { workspace = true }

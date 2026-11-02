@@ -52,7 +52,11 @@ unsafe extern "C" fn cmd_demo(_args: *const CommandArgs) {
         .send();
     golden_sdk::log!(
         "console_demo: вывод {}",
-        if printed { "напечатан" } else { "не напечатан" }
+        if printed {
+            "напечатан"
+        } else {
+            "не напечатан"
+        }
     );
 }
 
@@ -134,7 +138,8 @@ fn register(name: &str, help: &str, callback: concommand::CommandCallback) {
 fn wait_for_modules(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        if golden_sdk::process::hw_base().is_some() && golden_sdk::process::client_base().is_some() {
+        if golden_sdk::process::hw_base().is_some() && golden_sdk::process::client_base().is_some()
+        {
             return true;
         }
         if Instant::now() >= deadline {

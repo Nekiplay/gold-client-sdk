@@ -68,7 +68,10 @@ pub extern "system" fn DllMain(module: *mut c_void, reason: u32, _reserved: *mut
 }
 
 fn bootstrap() {
-    golden_sdk::log!("example-auto-bhop {} запускается", env!("CARGO_PKG_VERSION"));
+    golden_sdk::log!(
+        "example-auto-bhop {} запускается",
+        env!("CARGO_PKG_VERSION")
+    );
     golden_sdk::log!("сборка смещений: {}", golden_sdk::BUILD);
 
     if !wait_for_modules(MODULE_WAIT) {
@@ -101,8 +104,9 @@ fn install() -> Result<(), String> {
             if let Some(entry) = renderer.method(SLOT_DRAW_MODEL) {
                 // SAFETY: `hook_draw_model` — функция того же ABI, что и
                 // `StudioDrawModel` этого рендерера.
-                let hook = unsafe { golden_std::hooks::install(entry, hook_draw_model as *const ()) }
-                    .map_err(|error| format!("{error}"))?;
+                let hook =
+                    unsafe { golden_std::hooks::install(entry, hook_draw_model as *const ()) }
+                        .map_err(|error| format!("{error}"))?;
                 ORIGINAL.store(hook.original(), Ordering::Release);
                 golden_sdk::log!("перехват StudioDrawModel включён ({entry:#x})");
                 return Ok(());
@@ -132,7 +136,8 @@ golden_std::hook! {
 fn wait_for_modules(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        if golden_sdk::process::hw_base().is_some() && golden_sdk::process::client_base().is_some() {
+        if golden_sdk::process::hw_base().is_some() && golden_sdk::process::client_base().is_some()
+        {
             return true;
         }
         if Instant::now() >= deadline {

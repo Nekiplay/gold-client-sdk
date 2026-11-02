@@ -52,10 +52,7 @@ pub fn watch(path: PathBuf) {
             // через ноль секунд после загрузки.
             if path.exists() {
                 let _ = std::fs::remove_file(&path);
-                golden_sdk::log!(
-                    "команды: старый {} удалён, ждём новые",
-                    path.display()
-                );
+                golden_sdk::log!("команды: старый {} удалён, ждём новые", path.display());
             }
             while !golden_sdk::module::should_stop() {
                 thread::sleep(POLL);

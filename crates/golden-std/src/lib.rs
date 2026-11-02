@@ -37,6 +37,7 @@ pub mod concommand;
 pub mod console;
 pub mod esp;
 pub mod game;
+pub mod grenade;
 pub mod hook_macro;
 pub mod hooks;
 pub mod input;
@@ -47,7 +48,7 @@ pub mod schedule;
 pub mod unload;
 pub mod wallbang;
 
-pub use game::{Entity, Game, Player, Players, State, View, MAX_PLAYERS};
+pub use game::{Entity, Game, MAX_PLAYERS, Player, Players, State, View};
 pub use golden_sdk::math::{Camera, Fov, ScreenPos, Vec3};
 pub use golden_sdk::player::Team;
 pub use golden_sdk::state::horizontal_fov;

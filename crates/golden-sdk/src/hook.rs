@@ -55,7 +55,10 @@ impl core::fmt::Debug for Detour {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Detour")
             .field("enabled", &self.inner.is_enabled())
-            .field("trampoline", &(self.inner.trampoline() as *const () as usize))
+            .field(
+                "trampoline",
+                &(self.inner.trampoline() as *const () as usize),
+            )
             .finish()
     }
 }

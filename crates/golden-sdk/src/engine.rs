@@ -1,4 +1,4 @@
-﻿//! `engine_studio_api_t` — таблица 48 функций, которую движок передаёт клиенту.
+//! `engine_studio_api_t` — таблица 48 функций, которую движок передаёт клиенту.
 //!
 //! Клиент копирует её себе (`client.dll + 0x1B2548`), но обе копии идентичны,
 //! поэтому SDK читает движковую (`hw.dll + 0x271B08`): она живёт дольше и не
@@ -39,7 +39,9 @@ impl EntityRef {
     /// # Safety
     /// `ptr` должен указывать на сущность движка.
     pub unsafe fn from_ptr(ptr: *mut c_void) -> Option<Self> {
-        (!ptr.is_null()).then_some(Self { ptr: ptr as *mut u8 })
+        (!ptr.is_null()).then_some(Self {
+            ptr: ptr as *mut u8,
+        })
     }
 
     /// Сущность по «сырому» адресу; `None`, если адрес не читается.
@@ -47,7 +49,9 @@ impl EntityRef {
     /// В отличие от [`EntityRef::from_ptr`] проверяет память: адреса приходят из
     /// игры, и после ухода с карты там может быть мусор.
     pub fn from_raw(addr: usize) -> Option<Self> {
-        process::is_readable(addr).then_some(Self { ptr: addr as *mut u8 })
+        process::is_readable(addr).then_some(Self {
+            ptr: addr as *mut u8,
+        })
     }
 
     pub fn as_ptr(&self) -> *mut c_void {
@@ -92,7 +96,8 @@ impl EntityRef {
     /// Упакованные цвета игрока: `(top, bottom)`.
     pub fn player_colors(&self) -> (u8, u8) {
         // SAFETY: указатель проверен при создании.
-        let packed: i32 = unsafe { process::read(self.addr() + crate::offsets::entity::PLAYER_COLORS) };
+        let packed: i32 =
+            unsafe { process::read(self.addr() + crate::offsets::entity::PLAYER_COLORS) };
         ((packed & 0xFF) as u8, ((packed >> 8) & 0xFF) as u8)
     }
 
@@ -115,7 +120,11 @@ impl EntityRef {
         }
         // SAFETY: указатель на сущность проверен при создании.
         let fallback: i32 = unsafe { process::read(self.player_info()) };
-        if (0..64).contains(&fallback) { fallback } else { -1 }
+        if (0..64).contains(&fallback) {
+            fallback
+        } else {
+            -1
+        }
     }
 
     /// Имя игрока из `player_info_t`.
@@ -136,7 +145,8 @@ impl EntityRef {
     /// Номер модели оружия в руках (`weaponmodel`), 0 — оружия нет.
     pub fn weapon_model_index(&self) -> i32 {
         // SAFETY: указатель проверен при создании.
-        let index: i32 = unsafe { process::read(self.addr() + crate::offsets::entity::WEAPON_MODEL) };
+        let index: i32 =
+            unsafe { process::read(self.addr() + crate::offsets::entity::WEAPON_MODEL) };
         if (0..8192).contains(&index) { index } else { 0 }
     }
 
@@ -265,7 +275,9 @@ impl EngineStudioApi {
         let api = unsafe { &*ptr };
         // Первые три слота обязаны быть кодом движка, иначе смещение уехало.
         let base = process::hw_base()?;
-        let ok = api.slots[..3].iter().all(|&p| process::is_code(p as usize, base));
+        let ok = api.slots[..3]
+            .iter()
+            .all(|&p| process::is_code(p as usize, base));
         ok.then_some(api)
     }
 
@@ -280,7 +292,9 @@ impl EngineStudioApi {
     pub fn client_copy() -> Option<&'static Self> {
         let base = process::client_base()?;
         // SAFETY: адрес — статическая копия в клиенте.
-        unsafe { Self::from_ptr((base + crate::offsets::client::ENGINE_STUDIO_API_COPY) as *const Self) }
+        unsafe {
+            Self::from_ptr((base + crate::offsets::client::ENGINE_STUDIO_API_COPY) as *const Self)
+        }
     }
 
     /// Сырой указатель слота по байтовому смещению.
@@ -302,7 +316,8 @@ impl EngineStudioApi {
 
     /// `studiohdr_t *Mod_Extradata(model_t *)` — заголовок модели.
     pub fn extradata(&self, model: *mut c_void) -> Option<StudioModel> {
-        let f: unsafe extern "C" fn(*mut c_void) -> *const c_void = self.func(api::MOD_EXTRADATA)?;
+        let f: unsafe extern "C" fn(*mut c_void) -> *const c_void =
+            self.func(api::MOD_EXTRADATA)?;
         // SAFETY: сигнатура слота, model проверяется на null внутри.
         if model.is_null() {
             return None;
@@ -365,7 +380,10 @@ impl EngineStudioApi {
     pub fn entity_index(&self, entity: EntityRef) -> Option<i32> {
         let target = entity.addr();
         for index in 0..=Self::MAX_EDICTS {
-            if self.entity_by_index(index).is_some_and(|e| e.addr() == target) {
+            if self
+                .entity_by_index(index)
+                .is_some_and(|e| e.addr() == target)
+            {
                 return Some(index);
             }
         }
@@ -470,7 +488,8 @@ impl EngineStudioApi {
     ///
     /// Порядок аргументов — как в бинарнике Gold Client, **не** как в HLSDK.
     pub fn mod_for_name(&self, load: bool, name: &CStr) -> Option<*mut c_void> {
-        let f: unsafe extern "C" fn(i32, *const c_void) -> *mut c_void = self.func(api::MOD_FOR_NAME)?;
+        let f: unsafe extern "C" fn(i32, *const c_void) -> *mut c_void =
+            self.func(api::MOD_FOR_NAME)?;
         // SAFETY: сигнатура слота, `name` живёт дольше вызова.
         let model = unsafe { f(load as i32, name.as_ptr().cast()) };
         (!model.is_null()).then_some(model)

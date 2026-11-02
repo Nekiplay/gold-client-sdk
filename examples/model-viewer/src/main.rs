@@ -22,8 +22,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use bind::{bind_pose, hitboxes, Box3, PlacedHitbox, BOX_EDGES};
-use golden_sdk::studio::BoneMatrix;
 use golden_sdk::math::Vec3;
+use golden_sdk::studio::BoneMatrix;
 use golden_sdk::studio::{HitGroup, StudioModel};
 
 fn main() {
@@ -68,7 +68,10 @@ fn main() {
 
     let raw_poses = bind_pose(&model);
     let boxes = hitboxes(&model, &raw_poses);
-    let poses: Vec<BoneMatrix> = raw_poses.iter().map(|pose| BoneMatrix { m: pose.m }).collect();
+    let poses: Vec<BoneMatrix> = raw_poses
+        .iter()
+        .map(|pose| BoneMatrix { m: pose.m })
+        .collect();
 
     if std::env::var_os("MV_DEBUG").is_some() {
         println!("\nотладка: bind-данные и мировые позиции костей");
@@ -133,8 +136,12 @@ fn print_report(path: &Path, model: &StudioModel) {
             "  {:<12} кость {:>3}  ({:.1}, {:.1}, {:.1}) .. ({:.1}, {:.1}, {:.1})",
             group.name(),
             hitbox.bone,
-            hitbox.bbmin.x, hitbox.bbmin.y, hitbox.bbmin.z,
-            hitbox.bbmax.x, hitbox.bbmax.y, hitbox.bbmax.z
+            hitbox.bbmin.x,
+            hitbox.bbmin.y,
+            hitbox.bbmin.z,
+            hitbox.bbmax.x,
+            hitbox.bbmax.y,
+            hitbox.bbmax.z
         );
     }
 
@@ -143,7 +150,11 @@ fn print_report(path: &Path, model: &StudioModel) {
     for attachment in attachments {
         println!(
             "  {:<20} кость {:>3}  ({:.2}, {:.2}, {:.2})",
-            attachment.name(), attachment.bone, attachment.org.x, attachment.org.y, attachment.org.z
+            attachment.name(),
+            attachment.bone,
+            attachment.org.x,
+            attachment.org.y,
+            attachment.org.z
         );
     }
 
@@ -168,7 +179,9 @@ fn print_report(path: &Path, model: &StudioModel) {
     for sequence in sequences.iter().take(10) {
         println!(
             "  {:<24} кадров {:>3} fps {:.1}",
-            sequence.name(), sequence.numframes, sequence.fps
+            sequence.name(),
+            sequence.numframes,
+            sequence.fps
         );
     }
     if sequences.len() > 10 {
@@ -187,7 +200,8 @@ fn print_ascii(model: &StudioModel, poses: &[BoneMatrix], boxes: &[PlacedHitbox]
     let width = 46usize;
     let height = 28usize;
 
-    for (label, axis_x, axis_y) in [("спереди", 0usize, 2usize), ("сбоку", 1usize, 2usize)] {
+    for (label, axis_x, axis_y) in [("спереди", 0usize, 2usize), ("сбоку", 1usize, 2usize)]
+    {
         let mut grid = vec![vec![' '; width]; height];
 
         let points: Vec<(f32, f32)> = positions
@@ -208,10 +222,7 @@ fn print_ascii(model: &StudioModel, poses: &[BoneMatrix], boxes: &[PlacedHitbox]
         let scale = 2.6_f32;
         let fits = ((max_a - min_a) / scale).max((max_b - min_b) / scale);
         let scale = (scale * (fits / (height as f32 - 2.0)).max(1.0)).max(scale);
-        let center = (
-            (min_a + max_a) * 0.5,
-            (min_b + max_b) * 0.5,
-        );
+        let center = ((min_a + max_a) * 0.5, (min_b + max_b) * 0.5);
 
         // Коробка габаритов по хитбоксам: рамка, чтобы видеть масштаб.
         if let Some(bounds) = union(&boxes.iter().map(|b| b.bounds).collect::<Vec<_>>()) {
@@ -222,7 +233,14 @@ fn print_ascii(model: &StudioModel, poses: &[BoneMatrix], boxes: &[PlacedHitbox]
                 (axis(bounds.min, axis_x), axis(bounds.max, axis_y)),
             ];
             for pair in [[0, 1], [1, 2], [2, 3], [3, 0]] {
-                plot_line(&mut grid, corners[pair[0]], corners[pair[1]], '.', center, scale);
+                plot_line(
+                    &mut grid,
+                    corners[pair[0]],
+                    corners[pair[1]],
+                    '.',
+                    center,
+                    scale,
+                );
             }
         }
 
@@ -257,8 +275,16 @@ fn union(boxes: &[Box3]) -> Option<Box3> {
     let first = iter.next()?;
     let mut out = *first;
     for b in iter {
-        out.min = Vec3::new(out.min.x.min(b.min.x), out.min.y.min(b.min.y), out.min.z.min(b.min.z));
-        out.max = Vec3::new(out.max.x.max(b.max.x), out.max.y.max(b.max.y), out.max.z.max(b.max.z));
+        out.min = Vec3::new(
+            out.min.x.min(b.min.x),
+            out.min.y.min(b.min.y),
+            out.min.z.min(b.min.z),
+        );
+        out.max = Vec3::new(
+            out.max.x.max(b.max.x),
+            out.max.y.max(b.max.y),
+            out.max.z.max(b.max.z),
+        );
     }
     Some(out)
 }
@@ -342,7 +368,11 @@ fn write_preview(
     let mut image = Canvas::new(1200, 448);
     image.clear([16, 18, 22]);
 
-    let panels = [("спереди", 0usize, 2usize), ("сбоку", 1usize, 2usize), ("сверху", 0usize, 1usize)];
+    let panels = [
+        ("спереди", 0usize, 2usize),
+        ("сбоку", 1usize, 2usize),
+        ("сверху", 0usize, 1usize),
+    ];
     let panel_width = image.width / panels.len();
 
     for (index, (_label, axis_x, axis_y)) in panels.iter().enumerate() {
@@ -372,12 +402,18 @@ fn write_preview(
                 let p0 = area.project(
                     axis(corners[from], *axis_x),
                     axis(corners[from], *axis_y),
-                    min_a, max_a, min_b, max_b,
+                    min_a,
+                    max_a,
+                    min_b,
+                    max_b,
                 );
                 let p1 = area.project(
                     axis(corners[to], *axis_x),
                     axis(corners[to], *axis_y),
-                    min_a, max_a, min_b, max_b,
+                    min_a,
+                    max_a,
+                    min_b,
+                    max_b,
                 );
                 image.line(p0, p1, color);
             }
@@ -449,7 +485,15 @@ struct Rect {
 
 impl Rect {
     /// Точка модели в пикселях панели; `y` перевёрнут (в BMP растёт вниз).
-    fn project(&self, a: f32, b: f32, min_a: f32, max_a: f32, min_b: f32, max_b: f32) -> (i32, i32) {
+    fn project(
+        &self,
+        a: f32,
+        b: f32,
+        min_a: f32,
+        max_a: f32,
+        min_b: f32,
+        max_b: f32,
+    ) -> (i32, i32) {
         let scale = (self.width as f32 / (max_a - min_a)).min(self.height as f32 / (max_b - min_b));
         let center_a = (min_a + max_a) * 0.5;
         let center_b = (min_b + max_b) * 0.5;
@@ -468,7 +512,11 @@ struct Canvas {
 
 impl Canvas {
     fn new(width: usize, height: usize) -> Self {
-        Self { width, height, pixels: vec![[0, 0, 0]; width * height] }
+        Self {
+            width,
+            height,
+            pixels: vec![[0, 0, 0]; width * height],
+        }
     }
 
     fn clear(&mut self, color: [u8; 3]) {

@@ -231,6 +231,8 @@ pub struct Bsp {
     marksurfaces: Vec<u16>,
     models: Vec<Model>,
     brushes: Vec<Brush>,
+    /// Локальные AABB моделей: `bounds[model] = (mins, maxs)`.
+    bounds: Vec<(Vec3, Vec3)>,
 }
 
 impl Bsp {
@@ -301,7 +303,7 @@ impl Bsp {
             })
             .collect();
 
-        let faces = cut(lump::FACES)
+        let faces: Vec<Face> = cut(lump::FACES)
             .chunks_exact(20)
             .map(|raw| Face {
                 plane: read_u16(raw, 0).unwrap_or_default(),
@@ -319,7 +321,7 @@ impl Bsp {
 
         let textures = parse_textures(cut(lump::TEXTURES));
 
-        let vertices = cut(lump::VERTICES)
+        let vertices: Vec<Vec3> = cut(lump::VERTICES)
             .chunks_exact(12)
             .map(|raw| {
                 Vec3::new(
@@ -330,7 +332,7 @@ impl Bsp {
             })
             .collect();
 
-        let edges = cut(lump::EDGES)
+        let edges: Vec<[u16; 2]> = cut(lump::EDGES)
             .chunks_exact(4)
             .map(|raw| {
                 [
@@ -340,7 +342,7 @@ impl Bsp {
             })
             .collect();
 
-        let surfedges = cut(lump::SURFEDGES)
+        let surfedges: Vec<i32> = cut(lump::SURFEDGES)
             .chunks_exact(4)
             .map(|raw| read_i32(raw, 0).unwrap_or_default())
             .collect();
@@ -368,6 +370,7 @@ impl Bsp {
         }
 
         let brushes = parse_brushes(cut(lump::ENTITIES), models.len());
+        let bounds = model_bounds(&models, &faces, &edges, &surfedges, &vertices);
 
         Ok(Self {
             planes,
@@ -382,6 +385,7 @@ impl Bsp {
             marksurfaces,
             models,
             brushes,
+            bounds,
         })
     }
 
@@ -393,6 +397,11 @@ impl Bsp {
     /// Brush-сущности с их сдвигами.
     pub fn brushes(&self) -> &[Brush] {
         &self.brushes
+    }
+
+    /// Локальные границы модели `(mins, maxs)`; `None`, если модель пустая.
+    pub fn model_bounds(&self, model: usize) -> Option<(Vec3, Vec3)> {
+        self.bounds.get(model).copied()
     }
 
     /// Имена текстур карты.
@@ -425,6 +434,14 @@ impl Bsp {
         };
         let local_start = start - brush.origin;
         let local_end = end - brush.origin;
+        // Дешёвое отсечение: если отрезок не задевает AABB модели, обход её
+        // BSP-дерева не нужен. Без этого LOS-проверка флешки на каждого игрока
+        // перебирает все brush-модели карты и роняет FPS.
+        if let Some((mins, maxs)) = self.model_bounds(brush.model) {
+            if !segment_intersects_aabb(local_start, local_end, mins, maxs) {
+                return Trace::clear(end);
+            }
+        }
         let mut trace = self.trace_in(brush.model, model.head_node[0], local_start, local_end);
         trace.end = trace.end + brush.origin;
         trace
@@ -608,7 +625,7 @@ impl Bsp {
         trace.model = model;
         trace.allsolid = true;
         let mut steps = STEP_BUDGET;
-        let _ = self.recursive(head, 0.0, 1.0, start, end, &mut trace, 0, &mut steps);
+        let _ = self.recursive(model, head, 0.0, 1.0, start, end, &mut trace, 0, &mut steps);
         trace
     }
 
@@ -616,6 +633,7 @@ impl Bsp {
     #[allow(clippy::too_many_arguments)]
     fn recursive(
         &self,
+        model: usize,
         num: i32,
         p1f: f32,
         p2f: f32,
@@ -652,10 +670,10 @@ impl Bsp {
             plane.normal.dot(p2) - plane.dist,
         );
         if t1 >= 0.0 && t2 >= 0.0 {
-            return self.recursive(node.children[0], p1f, p2f, p1, p2, trace, depth + 1, steps);
+            return self.recursive(model, node.children[0], p1f, p2f, p1, p2, trace, depth + 1, steps);
         }
         if t1 < 0.0 && t2 < 0.0 {
-            return self.recursive(node.children[1], p1f, p2f, p1, p2, trace, depth + 1, steps);
+            return self.recursive(model, node.children[1], p1f, p2f, p1, p2, trace, depth + 1, steps);
         }
 
         // Точку пересечения отодвигаем на DIST_EPSILON в сторону начала луча.
@@ -675,6 +693,7 @@ impl Bsp {
         let side = usize::from(t1 < 0.0);
 
         if !self.recursive(
+            model,
             node.children[side],
             p1f,
             midf,
@@ -687,8 +706,9 @@ impl Bsp {
             return false;
         }
         // За узлом не сплошное — идём дальше.
-        if self.contents_in(0, node.children[side ^ 1], mid) != CONTENTS_SOLID {
+        if self.contents_in(model, node.children[side ^ 1], mid) != CONTENTS_SOLID {
             return self.recursive(
+                model,
                 node.children[side ^ 1],
                 midf,
                 p2f,
@@ -712,7 +732,8 @@ impl Bsp {
         let mut back_midf = midf;
         let mut back_mid = mid;
         for _ in 0..64 {
-            if self.contents_in(0, self.models[0].head_node[0], back_mid) != CONTENTS_SOLID {
+            let head = self.models.get(model).map_or(0, |entry| entry.head_node[0]);
+            if self.contents_in(model, head, back_mid) != CONTENTS_SOLID {
                 break;
             }
             back_frac -= 0.1;
@@ -731,6 +752,87 @@ impl Bsp {
 }
 
 /// Имена текстур из lump'а текстур.
+/// Считает локальные AABB всех моделей карты.
+///
+/// Нужно для отсечения `trace_brush`: у brush-модели нет готовых границ, а
+/// обходить её BSP-дерево на каждый луч накладно.
+fn model_bounds(
+    models: &[Model],
+    faces: &[Face],
+    edges: &[[u16; 2]],
+    surfedges: &[i32],
+    vertices: &[Vec3],
+) -> Vec<(Vec3, Vec3)> {
+    let mut out = Vec::with_capacity(models.len());
+    for model in models {
+        let mut mins = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+        let mut maxs = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        let start = model.first_face.max(0) as usize;
+        let end = start.saturating_add(model.faces.max(0) as usize);
+        for face in faces.get(start..end).unwrap_or(&[]) {
+            let first = face.first_edge.max(0) as usize;
+            let count = face.edges.max(0) as usize;
+            for &surfedge in surfedges.get(first..first.saturating_add(count)).unwrap_or(&[]) {
+                let Some(edge) = edges.get(surfedge.unsigned_abs() as usize) else {
+                    continue;
+                };
+                let index = if surfedge >= 0 { edge[0] } else { edge[1] };
+                let Some(vertex) = vertices.get(index as usize) else {
+                    continue;
+                };
+                mins.x = mins.x.min(vertex.x);
+                mins.y = mins.y.min(vertex.y);
+                mins.z = mins.z.min(vertex.z);
+                maxs.x = maxs.x.max(vertex.x);
+                maxs.y = maxs.y.max(vertex.y);
+                maxs.z = maxs.z.max(vertex.z);
+            }
+        }
+        if mins.x.is_finite() {
+            // Небольшой запас: точка на самой грани не должна отсекаться.
+            out.push((
+                mins - Vec3::new(1.0, 1.0, 1.0),
+                maxs + Vec3::new(1.0, 1.0, 1.0),
+            ));
+        } else {
+            out.push((Vec3::ZERO, Vec3::ZERO));
+        }
+    }
+    out
+}
+
+/// Пересекает ли отрезок `start..end` AABB `mins..maxs`.
+fn segment_intersects_aabb(start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3) -> bool {
+    let axes = [
+        (start.x, end.x, mins.x, maxs.x),
+        (start.y, end.y, mins.y, maxs.y),
+        (start.z, end.z, mins.z, maxs.z),
+    ];
+    let mut near = 0.0f32;
+    let mut far = 1.0f32;
+    for (from, to, min, max) in axes {
+        let delta = to - from;
+        if delta.abs() < f32::EPSILON {
+            if from < min || from > max {
+                return false;
+            }
+            continue;
+        }
+        let inverse = 1.0 / delta;
+        let mut first = (min - from) * inverse;
+        let mut second = (max - from) * inverse;
+        if first > second {
+            core::mem::swap(&mut first, &mut second);
+        }
+        near = near.max(first);
+        far = far.min(second);
+        if near > far {
+            return false;
+        }
+    }
+    true
+}
+
 fn parse_textures(lump: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     let Some(count) = read_i32(lump, 0) else {
@@ -752,42 +854,81 @@ fn parse_textures(lump: &[u8]) -> Vec<String> {
     names
 }
 
+/// Останавливает ли эта brush-сущность гранату (и вообще что-либо).
+///
+/// Движок линкует в столкновения только сущности с `solid != SOLID_NOT`, а у
+/// триггеров геометрия есть, но она невидима и ничему не мешает. Без этой
+/// проверки граната «врезается» в невидимую зону закупки или в триггер бомбсайта.
+fn solid_entity(classname: &str) -> bool {
+    if classname.starts_with("trigger_") {
+        return false;
+    }
+    !matches!(
+        classname,
+        "func_buyzone"
+            | "func_bomb_target"
+            | "func_hostage_rescue"
+            | "func_illusionary"
+            | "func_water"
+            | "func_ladder"
+            | "func_friction"
+            | "func_areaportal"
+            | "func_areaportalwindow"
+    )
+}
+
 /// Brush-сущности из текста `entities`.
 fn parse_brushes(entities: &[u8], models: usize) -> Vec<Brush> {
     let text = String::from_utf8_lossy(entities);
     let mut brushes = Vec::new();
     let mut model = None;
     let mut origin = Vec3::ZERO;
+    let mut classname = String::new();
+    let mut skipped = 0usize;
     for (key, value) in entity_pairs(&text) {
         match key.as_str() {
             "{" => {
                 model = None;
                 origin = Vec3::ZERO;
+                classname.clear();
             }
             "}" => {
                 if let Some(index) = model.take() {
                     if index > 0 && index < models {
-                        brushes.push(Brush {
-                            model: index,
-                            origin,
-                        });
+                        if solid_entity(&classname) {
+                            brushes.push(Brush {
+                                model: index,
+                                origin,
+                            });
+                        } else {
+                            skipped += 1;
+                        }
                     }
                 }
                 origin = Vec3::ZERO;
+                classname.clear();
             }
             "model" => {
                 if let Some(index) = value.strip_prefix('*') {
                     model = index.trim().parse::<usize>().ok();
                 }
             }
+            "classname" => {
+                classname = String::from(value.trim());
+            }
             "origin" => {
-                let mut parts = value.split_whitespace().filter_map(|part| part.parse::<f32>().ok());
+                let mut parts = value
+                    .split_whitespace()
+                    .filter_map(|part| part.parse::<f32>().ok());
                 if let (Some(x), Some(y), Some(z)) = (parts.next(), parts.next(), parts.next()) {
                     origin = Vec3::new(x, y, z);
                 }
             }
             _ => {}
         }
+    }
+    if skipped > 0 {
+        crate::log!("bsp: невидимых brush-сущностей (триггеры) пропущено: {skipped}");
     }
     brushes
 }
@@ -919,6 +1060,19 @@ mod tests {
         header
     }
 
+    /// Триггеры и прочая невидимая геометрия гранату не останавливают.
+    #[test]
+    fn triggers_are_not_solid() {
+        assert!(!solid_entity("func_buyzone"));
+        assert!(!solid_entity("func_bomb_target"));
+        assert!(!solid_entity("trigger_multiple"));
+        assert!(!solid_entity("func_illusionary"));
+        assert!(solid_entity("func_wall"));
+        assert!(solid_entity("func_door"));
+        // Без класса (мировая геометрия) считаем препятствием.
+        assert!(solid_entity(""));
+    }
+
     #[test]
     fn traces_wall() {
         let bsp = Bsp::parse(&wall(100.0)).expect("карта");
@@ -947,7 +1101,11 @@ mod tests {
     fn reads_entity_pairs() {
         let text = "{\n\"classname\" \"worldspawn\"\n}\n{\n\"classname\" \"func_door\"\n\"model\" \"*3\"\n\"origin\" \"16 -8 0\"\n}\n";
         let pairs = entity_pairs(text);
-        assert!(pairs.iter().any(|(key, value)| key == "model" && value == "*3"));
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key == "model" && value == "*3")
+        );
         let brushes = parse_brushes(text.as_bytes(), 8);
         assert_eq!(brushes.len(), 1);
         assert_eq!(brushes[0].model, 3);

@@ -45,8 +45,8 @@ use golden_sdk::draw::Color;
 use golden_sdk::log;
 use golden_sdk::math::Vec3;
 use golden_sdk::module::InFlight;
-use golden_sdk::renderer::{interface_slot, StudioInterface, StudioRenderer};
 use golden_sdk::player::Team;
+use golden_sdk::renderer::{StudioInterface, StudioRenderer, interface_slot};
 
 use crate::game::{Game, Player};
 
@@ -451,10 +451,7 @@ unsafe fn draw_replay() {
             previous
         });
         let drawn = render::outline(style, || unsafe {
-            draw_player(
-                STUDIO_RENDER | STUDIO_WEAPON,
-                entry.info as *mut c_void,
-            );
+            draw_player(STUDIO_RENDER | STUDIO_WEAPON, entry.info as *mut c_void);
         });
         if let (Some(slot), Some(previous)) = (current, previous) {
             unsafe { *slot = previous };
@@ -474,9 +471,7 @@ unsafe fn draw_replay() {
             if let Some(visible) = entry.visible {
                 outline_entry(
                     entry,
-                    OutlineStyle::new(visible)
-                        .width(width)
-                        .through_walls(false),
+                    OutlineStyle::new(visible).width(width).through_walls(false),
                 );
             }
         }
@@ -491,9 +486,11 @@ unsafe fn draw_replay() {
 
 /// Ставит подписи для модели, которую движок рисует прямо сейчас.
 fn labels_for_current_model() {
-    let Some(settings) = SETTINGS.lock().ok().and_then(|s| s.as_ref().map(|s| {
-        (s.label.clone(), s.color.clone())
-    })) else {
+    let Some(settings) = SETTINGS
+        .lock()
+        .ok()
+        .and_then(|s| s.as_ref().map(|s| (s.label.clone(), s.color.clone())))
+    else {
         return;
     };
     let (label, _) = settings;
@@ -542,20 +539,10 @@ fn labels_for_current_model() {
         0.0,
     );
     if let Some(text) = above.filter(|text| !text.is_empty()) {
-        render::defer_label(
-            Vec3::new(axis.x, axis.y, highest.z),
-            &text,
-            color,
-            true,
-        );
+        render::defer_label(Vec3::new(axis.x, axis.y, highest.z), &text, color, true);
     }
     if let Some(text) = below.filter(|text| !text.is_empty()) {
-        render::defer_label(
-            Vec3::new(axis.x, axis.y, lowest.z),
-            &text,
-            color,
-            false,
-        );
+        render::defer_label(Vec3::new(axis.x, axis.y, lowest.z), &text, color, false);
     }
     LABELS.fetch_add(1, Ordering::Relaxed);
 }
@@ -670,10 +657,7 @@ fn player_color(renderer: &StudioRenderer) -> Option<Color> {
     if let Some(team) = player.and_then(|player| player.team()) {
         return Some(team.color());
     }
-    Some(
-        Team::from_model_name(model.name())
-            .map_or(Color::WHITE, Team::color),
-    )
+    Some(Team::from_model_name(model.name()).map_or(Color::WHITE, Team::color))
 }
 
 /// Цвет видимой части контура, если он задан.

@@ -17,8 +17,8 @@
 //! Дальше — только сбор и рисование; установка перехватов в [`install`].
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use golden_sdk::engine::EntityRef;
@@ -344,7 +344,11 @@ pub fn draw_frame() {
             golden_sdk::log!(
                 "hitboxes: конец сцены {frame}, тел нет, вызовов draw_player {}, overlay {}",
                 DRAW_CALLS.load(Ordering::Relaxed),
-                if Overlay::new().is_some() { "есть" } else { "нет" }
+                if Overlay::new().is_some() {
+                    "есть"
+                } else {
+                    "нет"
+                }
             );
         }
         return;
@@ -379,7 +383,11 @@ pub fn draw_frame() {
         }
         for hitbox in body.boxes() {
             // Голову рисуем толще: на тёмном шлеме тонкая линия теряется.
-            let width = if hitbox.group == HitGroup::Head { WIDTH * 3.0 } else { WIDTH };
+            let width = if hitbox.group == HitGroup::Head {
+                WIDTH * 3.0
+            } else {
+                WIDTH
+            };
             overlay.xray(&hitbox.edges(), color(hitbox.group), width);
         }
         // Точки костей из тех же матриц: если они лежат внутри тела, матрицы
@@ -433,7 +441,9 @@ fn dump(bodies: &[Body]) {
         None => "нет overlay".to_string(),
     };
     for body in bodies {
-        let trace_ptr = StudioRenderer::trace_bones().map(|ptr| ptr as usize).unwrap_or(0);
+        let trace_ptr = StudioRenderer::trace_bones()
+            .map(|ptr| ptr as usize)
+            .unwrap_or(0);
         golden_sdk::log!("hitboxes_dump: буфер костей движка {trace_ptr:08x}");
         golden_sdk::log!(
             "hitboxes_dump: слот {}, модель {}, тело {:.0} {:.0} {:.0} (экран {}), боксов {}",
@@ -445,7 +455,11 @@ fn dump(bodies: &[Body]) {
             screen(body.origin),
             body.boxes().len()
         );
-        if let Some(head) = body.boxes().iter().find(|hitbox| hitbox.group == HitGroup::Head) {
+        if let Some(head) = body
+            .boxes()
+            .iter()
+            .find(|hitbox| hitbox.group == HitGroup::Head)
+        {
             golden_sdk::log!(
                 "hitboxes_dump:   голова центр {:.1} {:.1} {:.1}, кость {}, экран {}",
                 head.center().x,

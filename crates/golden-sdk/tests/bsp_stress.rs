@@ -81,7 +81,11 @@ fn stress_trace_real_map() {
             slowest = (spent, index);
         }
         if index % 200 == 0 {
-            println!("луч {index}: {:.3} мке, худший {:.3}", spent * 1e6, slowest.0 * 1e6);
+            println!(
+                "луч {index}: {:.3} мке, худший {:.3}",
+                spent * 1e6,
+                slowest.0 * 1e6
+            );
         }
     }
     println!(

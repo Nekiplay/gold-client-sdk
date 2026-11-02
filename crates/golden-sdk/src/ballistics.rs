@@ -628,12 +628,7 @@ impl Shot {
 ///
 /// Луч начинается в `start`, идёт по `direction` (единичный вектор), пробивает
 /// поверхности и возвращает урон первому игроку, до которого дошёл.
-pub fn simulate(
-    weapon: &Weapon,
-    start: Vec3,
-    direction: Vec3,
-    tracer: &mut impl Tracer,
-) -> Shot {
+pub fn simulate(weapon: &Weapon, start: Vec3, direction: Vec3, tracer: &mut impl Tracer) -> Shot {
     simulate_with(weapon, start, direction, tracer, |_, _| Hitgroup::Chest)
 }
 
@@ -765,7 +760,8 @@ fn ln(x: f32) -> f32 {
     let z = (mantissa - 1.0) / (mantissa + 1.0);
     let z2 = z * z;
     // 2·atanh(z) = ln(mantissa): двойка уже внутри многочлена.
-    let series = z * (2.0 + z2 * (1.0 / 1.5 + z2 * (1.0 / 2.5 + z2 * (1.0 / 3.5 + z2 * (1.0 / 4.5)))));
+    let series =
+        z * (2.0 + z2 * (1.0 / 1.5 + z2 * (1.0 / 2.5 + z2 * (1.0 / 3.5 + z2 * (1.0 / 4.5)))));
     series + exponent as f32 * core::f32::consts::LN_2
 }
 
@@ -860,9 +856,8 @@ mod tests {
 
     #[test]
     fn materials_table_matches_engine_rules() {
-        let table = Materials::parse(
-            "// комментарий\nM metal1\nW crate\nG grate\nC wall_concrete\n",
-        );
+        let table =
+            Materials::parse("// комментарий\nM metal1\nW crate\nG grate\nC wall_concrete\n");
         assert_eq!(table.len(), 4);
         assert_eq!(table.classify("metal1_side"), Material::Metal);
         assert_eq!(table.classify("crate_top"), Material::Wood);

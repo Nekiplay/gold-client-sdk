@@ -89,8 +89,20 @@ unsafe extern "system" {
     fn CloseHandle(handle: isize) -> i32;
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
     fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
-    fn VirtualAllocEx(process: isize, addr: *mut c_void, size: usize, allocation: u32, protect: u32) -> *mut c_void;
-    fn WriteProcessMemory(process: isize, addr: *mut c_void, buf: *const c_void, size: usize, written: *mut usize) -> i32;
+    fn VirtualAllocEx(
+        process: isize,
+        addr: *mut c_void,
+        size: usize,
+        allocation: u32,
+        protect: u32,
+    ) -> *mut c_void;
+    fn WriteProcessMemory(
+        process: isize,
+        addr: *mut c_void,
+        buf: *const c_void,
+        size: usize,
+        written: *mut usize,
+    ) -> i32;
     fn CreateRemoteThread(
         process: isize,
         attributes: *mut c_void,
@@ -291,7 +303,13 @@ fn inject_with(process: isize, dll: &str) -> Result<(), HostError> {
     let mut written = 0usize;
     // SAFETY: буфер и размер — наши, адрес выделен выше.
     let ok = unsafe {
-        WriteProcessMemory(process, memory, path.as_ptr().cast(), path.len(), &mut written)
+        WriteProcessMemory(
+            process,
+            memory,
+            path.as_ptr().cast(),
+            path.len(),
+            &mut written,
+        )
     };
     if ok == 0 || written != path.len() {
         return Err(HostError::Write);

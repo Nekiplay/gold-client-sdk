@@ -19,7 +19,9 @@ pub struct Matrix34 {
 }
 
 impl Matrix34 {
-    pub const IDENTITY: Self = Self { m: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] };
+    pub const IDENTITY: Self = Self {
+        m: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    };
 
     /// Смещение в мировых координатах.
     pub fn origin(&self) -> Vec3 {
@@ -52,9 +54,8 @@ impl Matrix34 {
         let m = mul3(&mul3(&ry, &rx), &rz);
         Self {
             m: [
-                m[0][0], m[0][1], m[0][2], 0.0,
-                m[1][0], m[1][1], m[1][2], 0.0,
-                m[2][0], m[2][1], m[2][2], 0.0,
+                m[0][0], m[0][1], m[0][2], 0.0, m[1][0], m[1][1], m[1][2], 0.0, m[2][0], m[2][1],
+                m[2][2], 0.0,
             ],
         }
     }
@@ -72,10 +73,8 @@ impl Matrix34 {
             }
         }
         for row in 0..3 {
-            out[row * 4 + 3] = a[row * 4] * b[3]
-                + a[row * 4 + 1] * b[7]
-                + a[row * 4 + 2] * b[11]
-                + a[row * 4 + 3];
+            out[row * 4 + 3] =
+                a[row * 4] * b[3] + a[row * 4 + 1] * b[7] + a[row * 4 + 2] * b[11] + a[row * 4 + 3];
         }
         Self { m: out }
     }
@@ -138,10 +137,14 @@ impl Box3 {
     pub fn corners(&self) -> [Vec3; 8] {
         let (a, b) = (self.min, self.max);
         [
-            Vec3::new(a.x, a.y, a.z), Vec3::new(b.x, a.y, a.z),
-            Vec3::new(b.x, b.y, a.z), Vec3::new(a.x, b.y, a.z),
-            Vec3::new(a.x, a.y, b.z), Vec3::new(b.x, a.y, b.z),
-            Vec3::new(b.x, b.y, b.z), Vec3::new(a.x, b.y, b.z),
+            Vec3::new(a.x, a.y, a.z),
+            Vec3::new(b.x, a.y, a.z),
+            Vec3::new(b.x, b.y, a.z),
+            Vec3::new(a.x, b.y, a.z),
+            Vec3::new(a.x, a.y, b.z),
+            Vec3::new(b.x, a.y, b.z),
+            Vec3::new(b.x, b.y, b.z),
+            Vec3::new(a.x, b.y, b.z),
         ]
     }
 }
@@ -185,9 +188,18 @@ pub fn hitboxes(model: &StudioModel, poses: &[Matrix34]) -> Vec<PlacedHitbox> {
 
 /// Рёбра коробки: пары индексов точек из [`Box3::corners`].
 pub const BOX_EDGES: [(usize, usize); 12] = [
-    (0, 1), (1, 2), (2, 3), (3, 0),
-    (4, 5), (5, 6), (6, 7), (7, 4),
-    (0, 4), (1, 5), (2, 6), (3, 7),
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
 ];
 
 #[cfg(test)]
@@ -202,27 +214,42 @@ mod tests {
     fn roll_rotates_around_z() {
         // −90° вокруг Z: ось X уходит в −Y, как у корневой кости player-моделей.
         let m = Matrix34::rotation(0.0, 0.0, -core::f32::consts::FRAC_PI_2);
-        assert!(close(m.transform_point(Vec3::new(1.0, 0.0, 0.0)), Vec3::new(0.0, -1.0, 0.0)));
-        assert!(close(m.transform_point(Vec3::new(0.0, 0.0, 1.0)), Vec3::new(0.0, 0.0, 1.0)));
+        assert!(close(
+            m.transform_point(Vec3::new(1.0, 0.0, 0.0)),
+            Vec3::new(0.0, -1.0, 0.0)
+        ));
+        assert!(close(
+            m.transform_point(Vec3::new(0.0, 0.0, 1.0)),
+            Vec3::new(0.0, 0.0, 1.0)
+        ));
     }
 
     #[test]
     fn pitch_rotates_around_x() {
         let m = Matrix34::rotation(core::f32::consts::FRAC_PI_2, 0.0, 0.0);
-        assert!(close(m.transform_point(Vec3::new(0.0, 1.0, 0.0)), Vec3::new(0.0, 0.0, 1.0)));
+        assert!(close(
+            m.transform_point(Vec3::new(0.0, 1.0, 0.0)),
+            Vec3::new(0.0, 0.0, 1.0)
+        ));
     }
 
     #[test]
     fn yaw_rotates_around_y() {
         let m = Matrix34::rotation(0.0, core::f32::consts::FRAC_PI_2, 0.0);
-        assert!(close(m.transform_point(Vec3::new(1.0, 0.0, 0.0)), Vec3::new(0.0, 0.0, -1.0)));
+        assert!(close(
+            m.transform_point(Vec3::new(1.0, 0.0, 0.0)),
+            Vec3::new(0.0, 0.0, -1.0)
+        ));
     }
 
     #[test]
     fn translation_applies_after_rotation() {
         // Смещение родителя переносит точку дочерней кости целиком.
-        let parent = Matrix34::translated(Vec3::new(10.0, 0.0, 0.0))
-            .mul(&Matrix34::rotation(0.0, 0.0, -core::f32::consts::FRAC_PI_2));
+        let parent = Matrix34::translated(Vec3::new(10.0, 0.0, 0.0)).mul(&Matrix34::rotation(
+            0.0,
+            0.0,
+            -core::f32::consts::FRAC_PI_2,
+        ));
         let child = parent.mul(&Matrix34::translated(Vec3::new(5.0, 0.0, 0.0)));
         assert!(close(child.origin(), Vec3::new(10.0, -5.0, 0.0)));
     }
@@ -235,10 +262,15 @@ mod tests {
 
     #[test]
     fn box_corners_cover_bounds() {
-        let b = Box3 { min: Vec3::new(-1.0, -2.0, -3.0), max: Vec3::new(4.0, 5.0, 6.0) };
+        let b = Box3 {
+            min: Vec3::new(-1.0, -2.0, -3.0),
+            max: Vec3::new(4.0, 5.0, 6.0),
+        };
         let corners = b.corners();
         assert_eq!(corners.len(), 8);
-        assert!(corners.iter().any(|c| close(*c, Vec3::new(-1.0, -2.0, -3.0))));
+        assert!(corners
+            .iter()
+            .any(|c| close(*c, Vec3::new(-1.0, -2.0, -3.0))));
         assert!(corners.iter().any(|c| close(*c, Vec3::new(4.0, 5.0, 6.0))));
     }
 }

@@ -33,8 +33,8 @@
 //! потом ввод, потом очистки SDK — так к моменту `FreeLibrary` в игре не
 //! остаётся ни одной точки входа в нашу DLL.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use golden_sdk::hook::{Detour, HookError, SwappedInterface};
 use golden_sdk::log;

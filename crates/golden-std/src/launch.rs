@@ -179,16 +179,14 @@ impl GameConfig {
             "1".to_string(),
         ];
         if self.windowed {
-            args.extend(
-                [
-                    "-windowed".to_string(),
-                    "-noborder".to_string(),
-                    "-w".to_string(),
-                    self.size.0.to_string(),
-                    "-h".to_string(),
-                    self.size.1.to_string(),
-                ],
-            );
+            args.extend([
+                "-windowed".to_string(),
+                "-noborder".to_string(),
+                "-w".to_string(),
+                self.size.0.to_string(),
+                "-h".to_string(),
+                self.size.1.to_string(),
+            ]);
         }
         args.extend(self.extra.iter().cloned());
         args.join(" ")
@@ -278,7 +276,8 @@ impl Game {
         // относительные пути от своего рабочего каталога, а не от нашего.
         let dll = dll.canonicalize().unwrap_or_else(|_| dll.to_path_buf());
         let path = dll.to_string_lossy().into_owned();
-        host::inject(self.child.pid(), &path).map_err(|error| LaunchError::Inject(error.to_string()))
+        host::inject(self.child.pid(), &path)
+            .map_err(|error| LaunchError::Inject(error.to_string()))
     }
 
     /// Процесс ещё жив.

@@ -177,8 +177,8 @@ pub fn unload_after(delay_ms: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Список очисток собирается вручную: реестр в модуле глобальный и общий на
     /// весь процесс, а тесты идут параллельно.

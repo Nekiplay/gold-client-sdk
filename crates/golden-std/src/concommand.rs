@@ -18,8 +18,8 @@
 //! # }
 //! ```
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use golden_sdk::concommand::{CommandError, ConCommand};
 use golden_sdk::log;
@@ -62,11 +62,7 @@ unsafe impl Send for Owned {}
 ///
 /// `callback` исполняется в игровом потоке, поэтому внутри нельзя рисовать и
 /// брать блокировки движка.
-pub fn register(
-    name: &str,
-    help: &str,
-    callback: CommandCallback,
-) -> Result<(), CommandError> {
+pub fn register(name: &str, help: &str, callback: CommandCallback) -> Result<(), CommandError> {
     // SAFETY: коллбек обязан жить, пока жива команда; он у нас `'static`, а
     // команду мы снимаем при выгрузке.
     let command = unsafe { ConCommand::install(name, help, callback)? };
@@ -113,7 +109,13 @@ pub fn print(text: &str) -> bool {
     // переводы строк он и так добавляет.
     let mut line: Vec<u8> = text
         .bytes()
-        .map(|byte| if byte == 0 || byte == b'\n' || byte == b'\r' { b' ' } else { byte })
+        .map(|byte| {
+            if byte == 0 || byte == b'\n' || byte == b'\r' {
+                b' '
+            } else {
+                byte
+            }
+        })
         .collect();
     line.push(0);
     // SAFETY: адрес проверен по базе модуля, формат константный, строка
@@ -227,7 +229,10 @@ pub fn hide_echo(name: &str) -> bool {
 pub fn show_echo(name: &str) -> bool {
     match HIDDEN.lock() {
         Ok(mut list) => {
-            if let Some(index) = list.iter().position(|hidden| hidden.eq_ignore_ascii_case(name)) {
+            if let Some(index) = list
+                .iter()
+                .position(|hidden| hidden.eq_ignore_ascii_case(name))
+            {
                 list.remove(index);
                 return true;
             }

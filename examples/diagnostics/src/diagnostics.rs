@@ -1,4 +1,4 @@
-﻿//! Диагностика: прогон самопроверок SDK и вывод отчёта в лог.
+//! Диагностика: прогон самопроверок SDK и вывод отчёта в лог.
 //!
 //! Это первая «фича» крейта и одновременно проверка, что SDK видит игру:
 //! если отчёт зелёный, значит смещения в [`golden_sdk::offsets`] актуальны для
@@ -52,7 +52,10 @@ impl Report {
 pub fn capture() -> Report {
     let start = Instant::now();
     let checks = validate::run();
-    Report { checks, elapsed: start.elapsed() }
+    Report {
+        checks,
+        elapsed: start.elapsed(),
+    }
 }
 
 /// Прогоняет проверки и пишет отчёт в лог.
@@ -77,7 +80,9 @@ pub fn run_when_ready(timeout: Duration) -> Report {
             return run();
         }
         if Instant::now() >= deadline {
-            golden_sdk::log::line("диагностика: рендерер так и не инициализировался, отчёт по текущему состоянию");
+            golden_sdk::log::line(
+                "диагностика: рендерер так и не инициализировался, отчёт по текущему состоянию",
+            );
             return run();
         }
         std::thread::sleep(Duration::from_millis(250));

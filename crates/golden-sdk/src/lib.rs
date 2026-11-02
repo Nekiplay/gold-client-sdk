@@ -1,4 +1,4 @@
-﻿//! # golden-sdk
+//! # golden-sdk
 //!
 //! Переиспользуемый SDK для Gold Client (CS 1.6): всё, что не является фичей,
 //! живёт здесь, чтобы новые функции (просмотрщик моделей, дебаг локального
@@ -71,6 +71,7 @@ pub mod console;
 pub mod draw;
 pub mod engine;
 pub mod glcolor;
+pub mod grenade;
 pub mod hook;
 pub mod host;
 pub mod log;

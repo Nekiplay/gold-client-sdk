@@ -495,7 +495,10 @@ impl StudioModel {
         if hdr.numbones < 0 || hdr.numbones as usize > MAXSTUDIOBONES {
             return None;
         }
-        Some(Self { header, len: hdr.length as usize })
+        Some(Self {
+            header,
+            len: hdr.length as usize,
+        })
     }
 
     pub fn header(&self) -> &StudioHeader {
@@ -610,7 +613,10 @@ impl StudioModel {
         }
         let start = offset as usize;
         let size = size_of::<T>();
-        let end = match (count as usize).checked_mul(size).and_then(|n| start.checked_add(n)) {
+        let end = match (count as usize)
+            .checked_mul(size)
+            .and_then(|n| start.checked_add(n))
+        {
             Some(end) => end,
             None => return &[],
         };
@@ -619,7 +625,12 @@ impl StudioModel {
         }
         // SAFETY: границы проверены, выравнивание соблюдено (заголовок и массивы
         // в формате выровнены по 4).
-        unsafe { core::slice::from_raw_parts(self.header.cast::<u8>().add(start) as *const T, count as usize) }
+        unsafe {
+            core::slice::from_raw_parts(
+                self.header.cast::<u8>().add(start) as *const T,
+                count as usize,
+            )
+        }
     }
 
     pub fn bones(&self) -> &[StudioBone] {
@@ -673,14 +684,11 @@ impl StudioModel {
     /// костей, получаем проволочный скелет.
     pub fn skeleton_edges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         let count = self.bones().len();
-        self.bones()
-            .iter()
-            .enumerate()
-            .filter_map(move |(i, b)| {
-                let parent = b.parent;
-                (parent >= 0 && (parent as usize) < count && parent as usize != i)
-                    .then_some((i, parent as usize))
-            })
+        self.bones().iter().enumerate().filter_map(move |(i, b)| {
+            let parent = b.parent;
+            (parent >= 0 && (parent as usize) < count && parent as usize != i)
+                .then_some((i, parent as usize))
+        })
     }
 
     /// Собирает скелет по готовым позициям костей.
@@ -725,7 +733,9 @@ pub struct BoneMatrix {
 
 impl BoneMatrix {
     pub const fn identity() -> Self {
-        Self { m: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] }
+        Self {
+            m: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        }
     }
 
     /// Перенос на вектор.
@@ -753,9 +763,8 @@ impl BoneMatrix {
         let m = mul3(&mul3(&ry, &rx), &rz);
         Self {
             m: [
-                m[0][0], m[0][1], m[0][2], 0.0,
-                m[1][0], m[1][1], m[1][2], 0.0,
-                m[2][0], m[2][1], m[2][2], 0.0,
+                m[0][0], m[0][1], m[0][2], 0.0, m[1][0], m[1][1], m[1][2], 0.0, m[2][0], m[2][1],
+                m[2][2], 0.0,
             ],
         }
     }
@@ -770,10 +779,8 @@ impl BoneMatrix {
                     + a[row * 4 + 1] * b[4 + column]
                     + a[row * 4 + 2] * b[8 + column];
             }
-            out[row * 4 + 3] = a[row * 4] * b[3]
-                + a[row * 4 + 1] * b[7]
-                + a[row * 4 + 2] * b[11]
-                + a[row * 4 + 3];
+            out[row * 4 + 3] =
+                a[row * 4] * b[3] + a[row * 4 + 1] * b[7] + a[row * 4 + 2] * b[11] + a[row * 4 + 3];
         }
         Self { m: out }
     }
@@ -920,13 +927,20 @@ mod tests {
         // Подделываем заголовок: массив костей за пределами `length`.
         let mut hdr = *model.header();
         hdr.numbones = 10_000;
-        let fake = StudioModel { header: &hdr, len: model.len() };
+        let fake = StudioModel {
+            header: &hdr,
+            len: model.len(),
+        };
         assert!(fake.bones().is_empty());
     }
 
     #[test]
     fn bone_matrix_origin_is_column_three() {
-        let m = BoneMatrix { m: [1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0] };
+        let m = BoneMatrix {
+            m: [
+                1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0,
+            ],
+        };
         assert_eq!(m.origin(), Vec3::new(10.0, 20.0, 30.0));
         assert!(m.is_finite());
     }

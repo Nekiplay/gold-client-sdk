@@ -51,7 +51,13 @@ unsafe extern "system" {
         flags: u32,
         template: isize,
     ) -> isize;
-    fn WriteFile(handle: isize, buf: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
+    fn WriteFile(
+        handle: isize,
+        buf: *const u8,
+        len: u32,
+        written: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
     fn SetFilePointer(handle: isize, distance: i32, high: *mut i32, method: u32) -> u32;
     fn CloseHandle(handle: isize) -> i32;
     fn GetLocalTime(time: *mut SystemTime);
@@ -168,10 +174,5 @@ fn timestamp() -> String {
     let mut time = SystemTime::default();
     // SAFETY: структура наша, вызов только заполняет её.
     unsafe { GetLocalTime(&mut time) };
-    alloc::format!(
-        "{:02}:{:02}:{:02}",
-        time.hour,
-        time.minute,
-        time.second
-    )
+    alloc::format!("{:02}:{:02}:{:02}", time.hour, time.minute, time.second)
 }

@@ -105,7 +105,8 @@ impl Module {
     pub fn path(&self) -> Option<String> {
         let mut buf = [0u8; 260];
         // SAFETY: буфер и его длина переданы корректно.
-        let len = unsafe { GetModuleFileNameA(self.0, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        let len =
+            unsafe { GetModuleFileNameA(self.0, buf.as_mut_ptr(), buf.len() as u32) } as usize;
         if len == 0 || len >= buf.len() {
             return None;
         }
