@@ -28,6 +28,15 @@
 //! остаются в базовом цвете, а видимые становятся зелёными (или какими задали).
 //! Никаких лучей и трассировок для этого не нужно.
 //!
+//! ## Обводка как источник целей
+//!
+//! Список обводимых игроков — это ровно список тех, кого движок реально
+//! нарисовал (и кого прошли фильтры ESP). Поэтому [`crate::trigger`] берёт
+//! цели отсюда: в момент, пока движок рисует меш модели и кости принадлежат
+//! ей самой, ESP снимает с неё хитбоксы и отдаёт триггерботу. Опция
+//! [`Esp::outline`] выключает рисование контуров — перехваты остаются, и
+//! триггербот продолжает получать цели без единого нарисованного пикселя.
+//!
 //! ## Только враги
 //!
 //! По умолчанию рисуются только враги: команда игрока сравнивается с командой
@@ -71,6 +80,9 @@ struct Settings {
     visible: Option<Arc<dyn Fn(&Player) -> Color + Send + Sync>>,
     label: Option<Arc<dyn Fn(&Player) -> (Option<String>, Option<String>) + Send + Sync>>,
     width: f32,
+    /// Рисовать ли контуры. Выключено — ESP ничего не рисует, но перехваты
+    /// живут и продолжают кормить [`crate::trigger`] целями.
+    outline: bool,
     /// Рисовать только врагов локального игрока.
     enemies_only: bool,
 }
@@ -103,12 +115,26 @@ static REPLAY_NANOS: AtomicU64 = AtomicU64::new(0);
 /// Накопленное время подписей, нс.
 static LABEL_NANOS: AtomicU64 = AtomicU64::new(0);
 /// Кэш текста подписей: имя и оружие читаются из интерфейса игры и стоят
-/// миллисекунды на игрока в каждом кадре.
-static LABEL_CACHE: Mutex<Option<HashMap<usize, (Instant, Option<String>, Option<String>)>>> =
-    Mutex::new(None);
+/// миллисекунды на игрока в каждом кадре. Текст живёт за `Arc`: чтение кэша
+/// клонирует указатель, а не строки.
+static LABEL_CACHE: Mutex<Option<HashMap<usize, (Instant, Arc<LabelText>)>>> = Mutex::new(None);
+/// Пара строк подписи: ник над головой и вторая строка под ногами.
+type LabelText = (Option<String>, Option<String>);
 /// Сколько живёт запись кэша подписи.
 const LABEL_TTL: Duration = Duration::from_millis(400);
 static LABELS: AtomicU32 = AtomicU32::new(0);
+/// Монотонный номер кадра: растёт в каждом конце сцены и не сбрасывается
+/// (в отличие от [`FRAMES`]). По нему работают «раз в кадр» вещи: снимок
+/// матрицы проекции и лимит пересборки подписей.
+static FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Сколько подписей пересобирается за кадр: чтение имени и оружия —
+/// миллисекунды на игрока, и без лимита все подписи с истёкшим кэшем
+/// обновлялись разом, одним утяжелённым кадром.
+const LABEL_REFRESH_PER_FRAME: u32 = 2;
+/// Кадр, для которого лимит пересборки подписей уже отсчитан.
+static LABEL_REFRESH_SEQ: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Сколько подписей пересобрано в кадре [`LABEL_REFRESH_SEQ`].
+static LABEL_REFRESHED: AtomicU32 = AtomicU32::new(0);
 
 /// Команда локального игрока и когда её выясняли.
 ///
@@ -122,6 +148,7 @@ pub struct Esp {
     visible: Option<Arc<dyn Fn(&Player) -> Color + Send + Sync>>,
     label: Option<Arc<dyn Fn(&Player) -> (Option<String>, Option<String>) + Send + Sync>>,
     width: f32,
+    outline: bool,
     enemies_only: bool,
 }
 
@@ -139,6 +166,7 @@ impl Esp {
             visible: None,
             label: None,
             width: 2.0,
+            outline: true,
             enemies_only: true,
         }
     }
@@ -187,6 +215,18 @@ impl Esp {
         self
     }
 
+    /// Рисовать ли контуры. По умолчанию включено.
+    ///
+    /// `false` — ESP ничего не рисует: без обводки, без подписей, без
+    /// перерисовки моделей. Перехваты и подмена интерфейса остаются, поэтому
+    /// [`crate::trigger`] продолжает получать цели — так триггербот не светит
+    /// себя ни единым нарисованным пикселем. Фильтр «только враги» остаётся
+    /// при этом фильтром целей.
+    pub fn outline(mut self, outline: bool) -> Self {
+        self.outline = outline;
+        self
+    }
+
     /// Рисовать только врагов локального игрока. По умолчанию включено.
     ///
     /// `false` рисует всех: и своих, и чужих.
@@ -209,6 +249,7 @@ impl Esp {
                 visible: self.visible,
                 label: self.label,
                 width: self.width,
+                outline: self.outline,
                 enemies_only: self.enemies_only,
             });
         }
@@ -292,13 +333,18 @@ crate::hook! {
         if IN_REPLAY.load(Ordering::Acquire) {
             return result;
         }
+        // Триггерботу нужна матрица проекции текущего кадра: здесь рендер-поток
+        // с живым GL-контекстом. На кадр достаточно одного снимка — по номеру
+        // кадра функция сама пропустит повторы (прежде матрицу читали
+        // gl-запросом с каждого игрока).
+        crate::trigger::note_projection(FRAME_SEQ.load(Ordering::Acquire));
         if !RENDER_MODEL_HOOKED.load(Ordering::Acquire) {
             install_render_model();
         }
         if !SCENE_HOOKED.load(Ordering::Acquire) {
             install_scene_hook();
         }
-        if SCENE_HOOKED.load(Ordering::Acquire) {
+        if SCENE_HOOKED.load(Ordering::Acquire) && outline_enabled() {
             if let Some(renderer) = StudioRenderer::global() {
                 if let Some(entity) = renderer.current_entity() {
                     // Своих не обводим: ESP существует, чтобы видеть врагов.
@@ -332,10 +378,13 @@ unsafe fn call_original_draw_player(flags: i32, player_info: *mut c_void) -> i32
     unsafe { function(flags, player_info) }
 }
 
-// Клиентский `StudioRenderModel`: после обычной отрисовки ставим подписи.
+// Клиентский `StudioRenderModel`: после обычной отрисовки ставим подписи и
+// снимаем цели триггербота.
 //
-// Только здесь кости движка принадлежат именно этой модели: после возврата из
-// `StudioDrawPlayer` они уже чужие, и подписи уезжают к другому объекту.
+// Именно здесь кости движка принадлежат рисуемой модели: до `StudioRenderModel`
+// они выставлены ей самой и ещё не перезаписаны следующей. Триггерботу и аиму
+// нужны они ровно в этот момент — поза совпадает с нарисованным телом. Работает и
+// при выключенной обводке: обычный движковый рендер никуда не девается.
 crate::hook! {
     unsafe extern "thiscall" fn hook_render_model(this: *mut c_void)
         original: render_model_original
@@ -346,6 +395,7 @@ crate::hook! {
             return;
         }
         let started = Instant::now();
+        trigger_target();
         labels_for_current_model();
         LABEL_NANOS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
@@ -385,6 +435,20 @@ crate::hook! {
         let started = Instant::now();
         unsafe { draw_replay() };
         REPLAY_NANOS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        // Новый кадр начался с этого момента: разовые работы кадра (снимок
+        // проекции, лимит пересборки подписей) меряются по этому номеру.
+        FRAME_SEQ.fetch_add(1, Ordering::Release);
+        // Обводка нарисована: буфер глубины по-прежнему движковый (обводка не
+        // пишет в него глубину), кости целей сняты — можно решать, стрелять ли.
+        crate::trigger::decide();
+        // Снимок целей для аима: его перехват `CL_CreateMove` срабатывает в
+        // промежутке «после чистки — до заполнения», когда рабочий список уже
+        // пуст. Копия живёт весь следующий кадр.
+        crate::trigger::publish_snapshot();
+        // Кадр отработал: цели собрались ещё при отрисовке сущностей, в начале
+        // кадра, решение их только что прочло — теперь список можно чистить.
+        // Чистить ДО decide нельзя: он увидел бы пустой список.
+        crate::trigger::frame_started();
         render::flush_labels();
         unsafe { scene_end_original()() };
         let frames = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -508,6 +572,60 @@ unsafe fn draw_replay() {
     IN_REPLAY.store(false, Ordering::Release);
 }
 
+/// Снимает хитбоксы игрока, которого движок рисует прямо сейчас, для
+/// триггербота и аима.
+///
+/// Вызывается после оригинального `StudioRenderModel` из обычного движкового
+/// рендера: кости ещё принадлежат этой модели, и поза совпадает с
+/// нарисованным телом. Работает и без обводки — движковый рендер идёт всегда.
+/// Фильтры: живой враг (настройка «только враги» ESP) и рост из [`REAL_HEIGHT`]:
+/// кости могли не дойти до модели, и тогда объём в разы больше игрока.
+fn trigger_target() {
+    if !crate::trigger::armed() && !crate::aim::armed() {
+        return;
+    }
+    if !SCENE_HOOKED.load(Ordering::Acquire) {
+        // Конец сцены не перехвачен: цели копились бы без чистки.
+        return;
+    }
+    let Some(renderer) = StudioRenderer::global() else {
+        return;
+    };
+    let Some(model) = renderer.studio_model() else {
+        return;
+    };
+    if !model.is_player_model() {
+        return;
+    }
+    let Some(entity) = renderer.current_entity() else {
+        return;
+    };
+    let index = entity.player_index();
+    if !(0..=63).contains(&index) {
+        return;
+    }
+    let Some(player) = Player::from_raw(index, entity) else {
+        return;
+    };
+    // Трупы движок ещё рисует (анимация падения) — по ним стрелять нечего,
+    // своих обводит фильтр «только враги».
+    if !player.is_alive() || !wanted(&player) {
+        return;
+    }
+    // Хитбоксы считаются один раз за игрока за кадр: из них же берётся объём
+    // тела для фильтра роста (StudioRenderer::bounds_over). Прежний путь
+    // `body_bounds` + `hitboxes_world` делал ту же матричную работу дважды —
+    // на серверах с толпой игроков это заметно ело кадр.
+    let hitboxes = renderer.hitboxes_world(&model);
+    let Some((lowest, highest)) = StudioRenderer::bounds_over(&hitboxes) else {
+        return;
+    };
+    if !REAL_HEIGHT.contains(&(highest.z - lowest.z)) {
+        return;
+    }
+    crate::trigger::add_target(entity, hitboxes);
+}
+
 /// Ставит подписи для модели, которую движок рисует прямо сейчас.
 fn labels_for_current_model() {
     let Some(settings) = SETTINGS
@@ -560,19 +678,24 @@ fn labels_for_current_model() {
     let cached = LABEL_CACHE
         .lock()
         .ok()
-        .and_then(|cache| cache.as_ref().and_then(|cache| cache.get(&key).cloned()))
-        .filter(|(at, _, _)| at.elapsed() < LABEL_TTL);
-    let (above, below) = match cached {
-        Some((_, above, below)) => (above, below),
-        None => {
-            let fresh = label(&player);
+        .and_then(|cache| cache.as_ref().and_then(|cache| cache.get(&key).cloned()));
+    let texts = match cached {
+        Some((at, texts)) if at.elapsed() < LABEL_TTL => texts,
+        // Кэш просрочен, но лимит пересборки кадра исчерпан: отдаём прежний
+        // текст — освежится в ближайших кадрах. Без лимита все игроки с
+        // истёкшим кэшем перестраивались в один кадр, и толпа давала
+        // «провал» каждые LABEL_TTL.
+        Some((_, texts)) if !label_refresh_left() => texts,
+        _ => {
+            let texts = Arc::new(label(&player));
             if let Ok(mut guard) = LABEL_CACHE.lock() {
                 let cache = guard.get_or_insert_with(HashMap::new);
-                cache.insert(key, (Instant::now(), fresh.0.clone(), fresh.1.clone()));
+                cache.insert(key, (Instant::now(), Arc::clone(&texts)));
             }
-            fresh
+            texts
         }
     };
+    let (above, below) = (&texts.0, &texts.1);
 
     // Углы AABB — края тела, а не ось: подпись у правого верхнего угла уезжает
     // вправо от головы. Берём середину по горизонтали.
@@ -581,13 +704,22 @@ fn labels_for_current_model() {
         (lowest.y + highest.y) * 0.5,
         0.0,
     );
-    if let Some(text) = above.filter(|text| !text.is_empty()) {
-        render::defer_label(Vec3::new(axis.x, axis.y, highest.z), &text, color, true);
+    if let Some(text) = above.as_deref().filter(|text| !text.is_empty()) {
+        render::defer_label(Vec3::new(axis.x, axis.y, highest.z), text, color, true);
     }
-    if let Some(text) = below.filter(|text| !text.is_empty()) {
-        render::defer_label(Vec3::new(axis.x, axis.y, lowest.z), &text, color, false);
+    if let Some(text) = below.as_deref().filter(|text| !text.is_empty()) {
+        render::defer_label(Vec3::new(axis.x, axis.y, lowest.z), text, color, false);
     }
     LABELS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Включены ли контуры. По умолчанию — да.
+fn outline_enabled() -> bool {
+    SETTINGS
+        .lock()
+        .ok()
+        .and_then(|settings| settings.as_ref().map(|settings| settings.outline))
+        .unwrap_or(true)
 }
 
 /// Рисовать ли этого игрока (учитывает настройку «только враги»).
@@ -596,6 +728,19 @@ fn wanted(player: &Player) -> bool {
         return true;
     }
     is_enemy(player)
+}
+
+/// Есть ли ещё место в лимите пересборки подписей этого кадра.
+///
+/// Первые [`LABEL_REFRESH_PER_FRAME`] просроченных подписей кадра
+/// пересобираются, остальные ждут своей очереди в ближайших кадрах.
+fn label_refresh_left() -> bool {
+    let seq = FRAME_SEQ.load(Ordering::Acquire);
+    if LABEL_REFRESH_SEQ.load(Ordering::Acquire) != seq {
+        LABEL_REFRESH_SEQ.store(seq, Ordering::Release);
+        LABEL_REFRESHED.store(0, Ordering::Release);
+    }
+    LABEL_REFRESHED.fetch_add(1, Ordering::AcqRel) < LABEL_REFRESH_PER_FRAME
 }
 
 /// Включён ли режим «только враги». По умолчанию — да.

@@ -1,0 +1,18 @@
+[package]
+name = "example-triggerbot"
+description = "Пример: триггербот по обводке ESP (оффлайн/боты). Механика — в golden-std."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+# Хуки объявлены как `thiscall` (соглашение вызовов методов движка), поэтому
+# крейт собирается только под i686: `cargo test --workspace` на x64 его не трогает.
+test = false
+doctest = false
+
+[dependencies]
+golden-sdk = { workspace = true }
+golden-std = { workspace = true }
+windows-sys = { workspace = true }

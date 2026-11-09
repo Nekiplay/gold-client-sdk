@@ -1,7 +1,7 @@
 //! Реестр перехватов и подмен интерфейса, которые снимает сам `unload`.
 //!
-//! Правило простое: мод не держит хуки у себя. Ставит через [`install`] или
-//! [`interface`] — std запоминает и снимает их сам в [`detach_all`], который
+//! Правило простое: мод не держит хуки у себя. Ставит через [`install`],
+//! [`interface`] или [`pointer`] — std запоминает и снимает их сам в [`detach_all`], который
 //! вызывается из [`crate::unload`]. Так выгрузка не зависит от того, вспомнил ли
 //! пример про свой `shutdown`: живой хук на освобождённую страницу — гарантированный
 //! краш движка.
@@ -33,6 +33,7 @@
 //! потом ввод, потом очистки SDK — так к моменту `FreeLibrary` в игре не
 //! остаётся ни одной точки входа в нашу DLL.
 
+use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -64,9 +65,36 @@ enum Managed {
     Detour(Detour),
     /// Подмена `g_pStudioInterface`: `Drop` вернёт движку указатель.
     Interface(Box<SwappedInterface>),
+    /// Подмена ячейки с указателем на функцию (например `pfnCreateMove`):
+    /// `Drop` вернёт прежний адрес.
+    Pointer(SwappedPointer),
 }
 
-// SAFETY: и детур, и подмена — объекты процесса игры, они не привязаны к потоку.
+/// Ячейка в `.data` модуля игры, в которой лежит адрес функции.
+///
+/// Запись выровненного указателя атомарна, поэтому движок в любой момент
+/// увидит либо нашу функцию, либо прежнюю — обе валидны. Правки байт кода и
+/// связанных с ними гонок здесь нет.
+struct SwappedPointer {
+    slot: *mut *mut c_void,
+    ours: *mut c_void,
+    previous: *mut c_void,
+}
+
+impl Drop for SwappedPointer {
+    fn drop(&mut self) {
+        // SAFETY: слот — глобал модуля игры, он живёт дольше мода. Возвращаем
+        // прежний адрес, только если там всё ещё наша функция: если движок
+        // успел записать свой, чужая запись не должна её затереть.
+        unsafe {
+            if *self.slot == self.ours {
+                *self.slot = self.previous;
+            }
+        }
+    }
+}
+
+// SAFETY: и детур, и подмены — объекты процесса игры, они не привязаны к потоку.
 unsafe impl Send for Managed {}
 
 static MANAGED: Mutex<Vec<Managed>> = Mutex::new(Vec::new());
@@ -185,6 +213,61 @@ pub unsafe fn interface(ours: *mut StudioInterface) -> Result<(), Error> {
     }
 }
 
+/// Подменяет указатель на функцию, который движок читает сам.
+///
+/// Не патчит код: по `slot` должен лежать адрес живой функции (например
+/// `hw::P_CREATE_MOVE`), а `hook` — ваша функция с тем же ABI. Полезно, когда
+/// движок вызывает клиентскую функцию через слот в своих данных: подменять
+/// байты чужой функции из стартового потока нельзя, а выровненный указатель —
+/// можно.
+///
+/// Снимается автоматически при [`crate::unload::unload`]: `Drop` вернёт прежний
+/// указатель, если движок не перезаписал слот.
+///
+/// # Safety
+/// `slot` должен указывать на записываемое выровненное место с ненулевым
+/// указателем; `hook` должен жить до выгрузки модуля и совпадать по ABI с
+/// функцией в слоте.
+pub unsafe fn pointer(slot: usize, hook: *const ()) -> Result<Hook, Error> {
+    let aligned = slot % core::mem::size_of::<*mut c_void>() == 0;
+    if slot == 0 || hook.is_null() || !aligned || !golden_sdk::process::is_writable(slot) {
+        return Err(HookError::BadTarget(slot));
+    }
+    let cell = slot as *mut *mut c_void;
+    // SAFETY: страница проверена на запись, значит, и на чтение; выравнивание
+    // проверено выше.
+    let previous = unsafe { *cell };
+    if previous.is_null() {
+        return Err(HookError::BadTarget(slot));
+    }
+    let swap = SwappedPointer {
+        slot: cell,
+        ours: hook as *mut c_void,
+        previous,
+    };
+    // SAFETY: запись выровненного указателя атомарна, а движок читает слот
+    // каждый кадр — он увидит либо нашу функцию, либо прежнюю, но не мусор.
+    unsafe { *cell = swap.ours };
+    match MANAGED.lock() {
+        Ok(mut list) => {
+            log::line(&format!(
+                "перехват: указатель {slot:#x} -> {hook:p}, оригинал {previous:p}, всего {}",
+                list.len() + 1
+            ));
+            list.push(Managed::Pointer(swap));
+            Ok(Hook {
+                original: previous as usize,
+            })
+        }
+        Err(poisoned) => {
+            drop(poisoned.into_inner());
+            // `Drop` вернёт прежний указатель.
+            drop(swap);
+            Err(HookError::BadTarget(slot))
+        }
+    }
+}
+
 /// Стоит ли над нашим интерфейсом ещё один мод.
 ///
 /// Если да, выгрузка этого мода уронила бы игру: верхний мод держит указатели в
@@ -208,7 +291,12 @@ pub fn enabled() -> usize {
         .lock()
         .map(|list| {
             list.iter()
-                .filter(|entry| matches!(entry, Managed::Detour(detour) if detour.is_enabled()))
+                .filter(|entry| match entry {
+                    Managed::Detour(detour) => detour.is_enabled(),
+                    // Подмена указателя активна, пока реестр её держит.
+                    Managed::Pointer(_) => true,
+                    Managed::Interface(_) => false,
+                })
                 .count()
         })
         .unwrap_or(0)
@@ -258,6 +346,8 @@ pub fn detach_all() -> usize {
             }
             // `Drop` возвращает движку исходный интерфейс.
             Managed::Interface(swap) => drop(swap),
+            // `Drop` возвращает прежний указатель в слоте.
+            Managed::Pointer(swap) => drop(swap),
         }
     }
     if count > 0 {

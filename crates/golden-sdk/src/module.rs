@@ -151,6 +151,20 @@ fn file_of(path: &str) -> String {
     }
 }
 
+/// Чужой ли адрес — код другого нашего мода (DLL с экспортом-меткой [`MARKER`]).
+///
+/// Так перехваты одного мода встают в цепочку поверх одноимённых перехватов
+/// другого: оригиналом в цепочке окажется чужой, но наш же перехват
+/// (например, `pfnCreateMove` триггербота, на который ляжет аим). Выгрузка
+/// цепочки безопасна в порядке «сверху вниз»: запрет выгрузки
+/// нижнего, пока над ним жив верхний, следят за этим.
+pub fn is_our_kind(address: usize) -> bool {
+    match Module::from_address(address) {
+        Some(module) => exports_marker(module.handle()),
+        None => false,
+    }
+}
+
 /// Другие моды в процессе: DLL с экспортом-меткой [`MARKER`].
 ///
 /// Ни имя файла, ни каталог не важны: сборку можно переименовать и положить в
@@ -167,7 +181,10 @@ pub fn other_mods() -> Vec<String> {
 }
 
 fn wide_to_string(wide: &[u16]) -> String {
-    let len = wide.iter().position(|unit| *unit == 0).unwrap_or(wide.len());
+    let len = wide
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(wide.len());
     String::from_utf16_lossy(&wide[..len])
 }
 
@@ -509,7 +526,8 @@ mod tests {
         assert!(!names.is_empty(), "снимок модулей пуст");
         let ours = Module::current().and_then(|module| module.file_name());
         assert!(
-            ours.as_ref().is_some_and(|ours| names.iter().any(|name| name == ours)),
+            ours.as_ref()
+                .is_some_and(|ours| names.iter().any(|name| name == ours)),
             "в списке нет своего модуля: {names:?}"
         );
     }

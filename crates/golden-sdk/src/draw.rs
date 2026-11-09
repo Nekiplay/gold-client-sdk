@@ -33,6 +33,12 @@ const GL_QUADS: u32 = 0x0007;
 const GL_MODELVIEW: u32 = 0x1700;
 const GL_PROJECTION: u32 = 0x1701;
 const GL_VIEWPORT: u32 = 0x0BA2;
+/// `GL_PROJECTION_MATRIX` — текущая матрица проекции контекста.
+const GL_PROJECTION_MATRIX: u32 = 0x0BA7;
+/// `GL_DEPTH_COMPONENT` — читать пиксели из буфера глубины.
+const GL_DEPTH_COMPONENT: u32 = 0x1902;
+/// `GL_FLOAT` — пиксели читаются как `f32`.
+const GL_FLOAT: u32 = 0x1406;
 const GL_BLEND: u32 = 0x0BE2;
 const GL_SRC_ALPHA: u32 = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
@@ -193,6 +199,10 @@ type DepthMaskFn = unsafe extern "system" fn(u32);
 type ClearFn = unsafe extern "system" fn(u32);
 /// `glGetError` — код последней ошибки GL.
 type GetErrorFn = unsafe extern "system" fn() -> u32;
+/// `glGetFloatv(pname, params)`.
+type GetFloatvFn = unsafe extern "system" fn(u32, *mut f32);
+/// `glReadPixels(x, y, width, height, format, type, pixels)`.
+type ReadPixelsFn = unsafe extern "system" fn(i32, i32, i32, i32, u32, u32, *mut core::ffi::c_void);
 
 /// Указатели на нужные функции `opengl32.dll`.
 #[derive(Debug)]
@@ -224,6 +234,8 @@ struct Fns {
     depth_func: DepthFuncFn,
     depth_mask: DepthMaskFn,
     clear: ClearFn,
+    get_floatv: GetFloatvFn,
+    read_pixels: ReadPixelsFn,
 }
 
 /// Доступ к рисованию OpenGL.
@@ -346,6 +358,8 @@ impl Gl {
                     clear: resolve(module, c"glClear")?,
                     disable_client_state: resolve(module, c"glDisableClientState")?,
                     enable_client_state: resolve(module, c"glEnableClientState")?,
+                    get_floatv: resolve(module, c"glGetFloatv")?,
+                    read_pixels: resolve(module, c"glReadPixels")?,
                 },
             })
         }
@@ -414,7 +428,8 @@ impl Gl {
     ///
     /// # Safety
     /// См. [`Gl::get`].
-    pub unsafe fn lines_with(        &self,
+    pub unsafe fn lines_with(
+        &self,
         color: Color,
         width: f32,
         segments: &[(Vec3, Vec3)],
@@ -558,6 +573,45 @@ impl Gl {
             return None;
         }
         Some((vp[0] as f32, vp[1] as f32, vp[2] as f32, vp[3] as f32))
+    }
+
+    /// Матрица проекции текущего контекста: колонка-мажор `[f32; 16]`.
+    ///
+    /// Нужна, чтобы пересчитать мировую точку в глубину окна и сравнить её с
+    /// буфером глубины — так проверяется видимость без трассировки карты.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`].
+    pub unsafe fn projection_matrix(&self) -> Option<[f32; 16]> {
+        let mut out = [0f32; 16];
+        // SAFETY: контракт передан вызывающим; массив нужного размера.
+        unsafe { (self.fns.get_floatv)(GL_PROJECTION_MATRIX, out.as_mut_ptr()) };
+        out.iter().all(|value| value.is_finite()).then_some(out)
+    }
+
+    /// Глубина одного пикселя: `0` — ближняя плоскость, `1` — дальняя.
+    ///
+    /// `None`, если контекст её не отдал. `x`/`y` — координаты GL от левого
+    /// нижнего угла вьюпорта; за пределами вьюпорта читается мусор — клампить
+    /// до вызова. Чтение синхронизирует конвейер, поэтому один пиксель на кадр.
+    ///
+    /// # Safety
+    /// См. [`Gl::get`].
+    pub unsafe fn read_depth(&self, x: i32, y: i32) -> Option<f32> {
+        let mut depth = 0f32;
+        // SAFETY: контракт передан вызывающим; четыре байта под один пиксель.
+        unsafe {
+            (self.fns.read_pixels)(
+                x,
+                y,
+                1,
+                1,
+                GL_DEPTH_COMPONENT,
+                GL_FLOAT,
+                core::ptr::from_mut(&mut depth).cast(),
+            )
+        };
+        depth.is_finite().then_some(depth)
     }
 
     /// Круг в мире, повёрнутый к камере (билиборд).

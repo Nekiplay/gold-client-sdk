@@ -409,11 +409,7 @@ fn draw_trails() {
                 if alpha <= 0.02 {
                     continue;
                 }
-                segments.push((
-                    from.pos,
-                    to.pos,
-                    Color::rgba(base.r, base.g, base.b, alpha),
-                ));
+                segments.push((from.pos, to.pos, Color::rgba(base.r, base.g, base.b, alpha)));
             }
         }
         segments
@@ -427,7 +423,8 @@ fn draw_trails() {
     overlay.trail(&segments, 3.0);
 }
 
-fn apply_held_name(name: &str) {    if !is_view_model(name) {
+fn apply_held_name(name: &str) {
+    if !is_view_model(name) {
         return;
     }
     let mut last = lock(&LAST_MODEL);

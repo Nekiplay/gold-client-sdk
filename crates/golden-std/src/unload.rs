@@ -261,8 +261,7 @@ pub fn detach_only() -> bool {
 /// `hw.dll+0xBD793` читает нулевую базу таблицы после освобождения), поэтому
 /// безопасная выгрузка только снимает перехваты и оставляет образ в памяти.
 /// Освобождение включается отдельно — `!free`.
-static FREE_REQUESTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static FREE_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Снимает мод и освобождает DLL.
 ///

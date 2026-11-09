@@ -15,6 +15,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "example-aimbot"
+version = "0.1.0"
+dependencies = [
+ "golden-sdk",
+ "golden-std",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "example-auto-bhop"
 version = "0.1.0"
 dependencies = [
@@ -67,6 +76,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-triggerbot"
+version = "0.1.0"
+dependencies = [
+ "golden-sdk",
+ "golden-std",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -89,14 +107,6 @@ version = "0.1.0"
 dependencies = [
  "retour",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "golden-stand"
-version = "0.1.0"
-dependencies = [
- "golden-sdk",
- "golden-std",
 ]
 
 [[package]]

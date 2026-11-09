@@ -585,10 +585,20 @@ impl StudioRenderer {
     ///
     /// `None`, если кости не готовы (мусор/нули в матрицах).
     pub fn body_bounds(&self, model: &StudioModel) -> Option<(Vec3, Vec3)> {
+        Self::bounds_over(&self.hitboxes_world(model))
+    }
+
+    /// Мировой объём по уже готовым хитбоксам: `(минимум, максимум)`.
+    ///
+    /// То же правило, что у [`Self::body_bounds`], но хитбоксы не строятся
+    /// заново — их мировые AABB просто складываются в общий объём. Когда
+    /// хитбоксы уже посчитаны (их снимает триггербот), отдельный вызов
+    /// `body_bounds` означал бы второй полный проход по матрицам всех костей
+    /// на каждого игрока в каждом кадре.
+    pub fn bounds_over(hitboxes: &[WorldHitbox]) -> Option<(Vec3, Vec3)> {
         let mut min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
         let mut max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-        let mut any = false;
-        for hitbox in self.hitboxes_world(model) {
+        for hitbox in hitboxes {
             min = Vec3::new(
                 min.x.min(hitbox.min.x),
                 min.y.min(hitbox.min.y),
@@ -599,9 +609,8 @@ impl StudioRenderer {
                 max.y.max(hitbox.max.y),
                 max.z.max(hitbox.max.z),
             );
-            any = true;
         }
-        (any && min.is_finite() && max.is_finite()).then_some((min, max))
+        (min.is_finite() && max.is_finite()).then_some((min, max))
     }
 
     /// Мировой AABB хитбокса: восемь углов `bbmin`/`bbmax` переводятся матрицей
@@ -818,5 +827,49 @@ impl StudioRenderer {
     /// должна быть спрекеширована, иначе движок откажется её грузить.
     pub fn load_model(&self, name: &CStr) -> Option<*mut c_void> {
         crate::engine::EngineStudioApi::for_engine()?.mod_for_name(true, name)
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+
+    fn world_hitbox(min: [f32; 3], max: [f32; 3]) -> WorldHitbox {
+        WorldHitbox {
+            group: HitGroup::Generic,
+            bone: 0,
+            min: Vec3::new(min[0], min[1], min[2]),
+            max: Vec3::new(max[0], max[1], max[2]),
+            matrix: BoneMatrix::identity(),
+            local_min: Vec3::new(0.0, 0.0, 0.0),
+            local_max: Vec3::new(0.0, 0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn bounds_over_spans_every_hitbox() {
+        let hitboxes = [
+            world_hitbox([0.0, 0.0, 0.0], [10.0, 10.0, 40.0]),
+            world_hitbox([-5.0, 2.0, 30.0], [3.0, 4.0, 70.0]),
+        ];
+        let (min, max) = StudioRenderer::bounds_over(&hitboxes).unwrap();
+        assert_eq!((min.x, min.y, min.z), (-5.0, 0.0, 0.0));
+        assert_eq!((max.x, max.y, max.z), (10.0, 10.0, 70.0));
+    }
+
+    #[test]
+    fn bounds_over_without_hitboxes_is_none() {
+        assert!(StudioRenderer::bounds_over(&[]).is_none());
+    }
+
+    #[test]
+    fn bounds_over_broken_matrix_is_none() {
+        // Негодные данные кости дают нечисла в AABB — по правилу body_bounds
+        // объём по ним не строится.
+        let broken = WorldHitbox {
+            min: Vec3::new(f32::NAN, 0.0, 0.0),
+            ..world_hitbox([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
+        };
+        assert!(StudioRenderer::bounds_over(&[broken]).is_none());
     }
 }

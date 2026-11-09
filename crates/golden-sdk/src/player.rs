@@ -186,6 +186,11 @@ impl PlayerExtra {
     }
 
     /// Здоровье — ключ `"health"`.
+    ///
+    /// ⚠ Доступно только для СЕБЯ и СОЮЗНИКОВ: сервер рассылает здоровье
+    /// лишь тиммейтам, для врагов клиент его не получает — в этом поле у
+    /// врага мусор, `0` или `-1`. Живость врага определяет [`Self::is_dead`]
+    /// (флаг из таблицы счёта, он обновляется для всех), а не это поле.
     pub fn health(&self) -> i32 {
         // SAFETY: адрес проверен в `for_index`.
         unsafe { crate::process::read(self.addr + crate::offsets::client::PLAYER_EXTRA_HEALTH) }
@@ -227,9 +232,13 @@ fn model_dir(name: &str) -> Option<&str> {
 /// Модели в руках (`v_`) и на земле (`w_`) отбрасываются всегда: у них тоже
 /// есть кости, но к игроку они отношения не имеют.
 pub fn is_player_model_name(name: &str) -> bool {
-    let stem = model_stem(name).to_ascii_lowercase();
-    if stem.starts_with("v_") || stem.starts_with("w_") {
-        return false;
+    // Проверка идёт на каждый вызов отрисовки каждой модели — сравнения
+    // регистронезависимые, копия строки в нижнем регистре не нужна.
+    let stem = model_stem(name);
+    if let Some(prefix) = stem.get(..2) {
+        if prefix.eq_ignore_ascii_case("v_") || prefix.eq_ignore_ascii_case("w_") {
+            return false;
+        }
     }
     if name
         .split(['/', '\\'])
@@ -237,7 +246,7 @@ pub fn is_player_model_name(name: &str) -> bool {
     {
         return true;
     }
-    model_dir(name).is_some_and(|dir| dir.eq_ignore_ascii_case(&stem))
+    model_dir(name).is_some_and(|dir| dir.eq_ignore_ascii_case(stem))
 }
 
 /// Читаемое имя оружия по имени модели: `w_ak47.mdl` → `AK-47`.

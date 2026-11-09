@@ -170,20 +170,12 @@ golden_std::unload::defer_unload(300);
 | `examples/diagnostics` | Счётчики и проверки состояния движка. |
 | `examples/console` | Вывод в консоль Gold Client: цветной отчёт билдером, обычная строка и своя команда. |
 | `examples/grenade` | Траектория гранаты и точка взрыва: для HE — урон по игрокам, для флешки — кого и на сколько ослепит, для смока — где он задымит. Формулы сервера в `golden_sdk::grenade`, состояние игры — в `golden_std::grenade`. |
+| `examples/triggerbot` | Триггербот без обводки: цели — враги из перехвата отрисовки ESP с выключенным рисованием (`Esp::outline(false)`), хитбоксы — из позы движкового рендера, «не закрыта ли» — по буферу глубины; огонь — бит `IN_ATTACK` в исходящей команде игрока (`CL_CreateMove`), без командного буфера; кнопка активации — `Trigger::activation` (в примере — `mouse5`, опрос системный через `input::Key`). Механика в `golden_std::trigger`. |
+| `examples/aimbot` | Аим на ближайшую к прицелу часть тела врага: хитбоксы — из того же перехвата отрисовки ESP, угол доводится плавно (`aim_smooth`, сектор поиска `aim_fov`), пишется в `cl.viewangles` из перехвата `CL_CreateMove` — то самое поле, из которого движок собирает и камеру, и команду серверу. Не стреляет, пока прицел не на враге: огонь разрешает триггербот с той же кнопкой активации. Механика в `golden_std::aim`. |
 
-## Стенд: запуск игры с ботами
+## Инъектор
 
-`tools/stand` поднимает игру, ставит ботов, инжектит DLL и ждёт отчёт в логе —
-так примеры проверяются без ручной возни с меню:
-
-```powershell
-target\i686-pc-windows-msvc\release\golden-stand.exe run `
-    target\i686-pc-windows-msvc\release\example_esp.dll `
-    --map de_dust2 --bots 3 --seconds 120 --needle "esp: моделей" `
-    --console "jointeam 2" --console "joinclass 1" --keep
-```
-
-Инъектор отдельно — `tools/inject`:
+Инъектор — `tools/inject`:
 
 ```powershell
 target\i686-pc-windows-msvc\release\golden-inject.exe <pid hl.exe> <путь к dll>

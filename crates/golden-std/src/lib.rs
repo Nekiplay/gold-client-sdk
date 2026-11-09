@@ -27,12 +27,16 @@
 //!   всё снимается само при [`unload`];
 //! * [`concommand`] — свои консольные команды, которые снимаются при выгрузке;
 //! * [`wallbang`] — рейкаст по геометрии карты: `Map::trace(from, to)`;
+//! * [`trigger`] — триггербот: стреляет по цели, когда прицел на обводке ESP;
+//! * [`aim`] — аим: доводит прицел до ближайшей к нему части тела врага
+//!   (`cl.viewangles` из перехвата `CL_CreateMove`, с плавностью и сектором
+//!   поиска);
 //! * [`box3`] — прямоугольный бокс и пересечение с ним лучом: [`box3::Box3`];
-//! * [`launch`] — запуск локальной игры с ботами и инъекция своей DLL;
 //! * [`unload`] — выгрузка мода из игры без перезапуска.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod aim;
 pub mod box3;
 pub mod commands;
 pub mod concommand;
@@ -43,10 +47,10 @@ pub mod grenade;
 pub mod hook_macro;
 pub mod hooks;
 pub mod input;
-pub mod launch;
 pub mod pose;
 pub mod render;
 pub mod schedule;
+pub mod trigger;
 pub mod unload;
 pub mod wallbang;
 
@@ -56,7 +60,6 @@ pub use golden_sdk::player::Team;
 pub use golden_sdk::state::horizontal_fov;
 pub use hooks::Hook;
 pub use input::{InputError, KeyBlocker};
-pub use launch::{Game as LaunchedGame, GameConfig, LaunchError};
 pub use pose::{Pose, PoseCache};
 pub use render::{Color, OutlineStyle, Overlay, outline};
 pub use schedule::Scheduler;

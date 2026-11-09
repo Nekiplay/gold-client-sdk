@@ -18,6 +18,8 @@
 //! | [`entity`] | поля `cl_entity_t`: модель, оружие, позиция, флаги |
 //! | [`player_info`] | аргумент `StudioDrawPlayer`: номер игрока, модель оружия |
 //! | [`entity_state`] | сетевой массив состояний (`GetEntityState`) |
+//! | [`usercmd`] | `usercmd_t`, который клиент заполняет в `CL_CreateMove` |
+//! | [`cl`] | `client_state_t`: текущая отдача `cl.punchangle` |
 //! | [`model`] | поля `model_t` (`studiohdr_t *` лежит в `+0x184`) |
 
 /// Preferred база образа у `hw.dll` и `client.dll`.
@@ -55,6 +57,17 @@ pub mod hw {
 
     /// Указатель на `HUD_GetStudioModelInterface` из `client.dll`.
     pub const P_CLIENT_STUDIO_ENTRY: usize = 0x43_DE4C;
+
+    /// `void (*pfnCreateMove)(float frametime, usercmd_t *cmd, int active)` —
+    /// указатель на `CL_CreateMove` из `client.dll`.
+    ///
+    /// Движок получает адрес через `GetProcAddress` при загрузке клиента
+    /// (`0x1003537E`), кладёт сюда и **читает слот каждый кадр** перед вызовом
+    /// (`0x10046818`: `mov eax, [0x1043DDE8]; ...; call eax`). Поэтому подмена
+    /// значения по этому адресу перехватывает `CreateMove` без правки кода:
+    /// запись выровненного указателя атомарна, а вызывающему в любой момент
+    /// достаётся либо клиентская функция, либо наша.
+    pub const P_CREATE_MOVE: usize = 0x43_DDE8;
 
     /// Флаг «клиент загружен и готов».
     pub const CLIENT_READY: usize = 0x43_DB9C;
@@ -304,6 +317,119 @@ pub mod ref_params {
     pub const SCREEN_HEIGHT: usize = BASE + 0xDC;
 }
 
+/// `client_state_t cl` — состояние клиента в `hw.dll`.
+///
+/// Сюда клиент складывает данные из последнего снапшота сервера. `ref_params`
+/// получает копию этих полей уже во время отрисовки (`0x100B40D0`), поэтому в
+/// `CreateMove` копия отстаёт на кадр, а исходное поле — нет.
+pub mod cl {
+    /// `vec3_t viewangles` — текущий угол обзора клиента.
+    ///
+    /// **Это и есть то, что уходит на сервер.** Движок переписывает
+    /// `usercmd_t::viewangles` из этого поля после `CL_CreateMove`, поэтому
+    /// правка `cmd->viewangles` в перехвате затирается: проверено в игре —
+    /// записанное в команду значение возвращается к `cl.viewangles` за один
+    /// кадр, а `cl.cmd` (последняя отправленная команда) всегда равно этому
+    /// полю. Гасить отдачу надо здесь.
+    ///
+    /// Поле же читает камера (`V_CalcRefdef`), складывая с `cl.punchangle`,
+    /// поэтому вычитание отдачи отсюда успокаивает и прицел, и обзор.
+    pub const VIEWANGLES: usize = 0x2E15_E28;
+
+    /// `vec3_t punchangle` — отдача из последнего снапшота.
+    ///
+    /// Именно это значение движок копирует в
+    /// [`ref_params::PUNCHANGLE`](super::ref_params::PUNCHANGLE) перед отрисовкой
+    /// (`0x100B428E`: `movss xmm0, [0x12E15E34]` → `[esi+0xA0]`).
+    ///
+    /// В живой игре значение **интерполируется** между снапшотами
+    /// (`0x10053076`), поэтому в `CreateMove` оно отстаёт от серверного на
+    /// `cl_interp`. Для расчёта компенсации смотрите
+    /// [`frames`](super::frames::PUNCHANGLE).
+    pub const PUNCHANGLE: usize = 0x2E15_E34;
+
+    /// Массив команд клиента `usercmd_t cl.cmds[64]`.
+    ///
+    /// За ним сразу начинается [`frames::BASE`](super::frames::BASE):
+    /// `64 * 0x4C = 0x1300`. Команду движок берёт как
+    /// `cl.cmds[cl.cmdnumber & 0x3F]` (`0x100467B9`: `imul esi, eax, 0x4C`).
+    pub const CMDS: usize = 0x2F22_6C0;
+
+    /// Шаг записи в `cl.cmds` (полная запись команды, не только `usercmd_t`).
+    pub const CMD_STRIDE: usize = 0x4C;
+
+    /// ✔ Копия команды, которую движок собирает перед отправкой (`cl.cmd`).
+    ///
+    /// `CL_SendCmd` (`0x10046992`) копирует `cl.cmds[cl.cmdnumber & 0x3F]` сюда
+    /// уже **после** `CL_CreateMove`, поэтому здесь видно, что реально уйдёт
+    /// на сервер. Поле `viewangles` — по смещению [`super::usercmd::VIEWANGLES`].
+    pub const CMD: usize = 0x2E15_DC0;
+
+    /// ✔ `unsigned short buttons` — кнопки, удерживаемые игроком.
+    ///
+    /// Значение живёт и после `CL_CreateMove`: движок при сборке отправляемой
+    /// команды OR-ит его в `cmd->buttons` после вызова, поэтому снять у
+    /// игрока огонь до выстрела можно только здесь — чистка бита в
+    /// `usercmd_t` ничего не даёт, движок вернёт его из этого поля.
+    pub const BUTTONS: usize = 0x2E15_E12;
+}
+
+/// Предсказанные кадры клиента (`cl.frames[64]` в `hw.dll`).
+///
+/// Движок строит их в `CL_PredictMovement` для команд от `cl.parsecount` до
+/// `cl.cmdnumber`: каждый кадр — состояние игрока после одной команды.
+/// Отдача в кадре (`+0x170`) — та, которую сервер применит к **следующей**
+/// команде, поэтому она опережает интерполированный `cl.punchangle`.
+///
+/// ✔ Сверено разбором `CL_CalcViewValues` (`0x1005305A` читает
+/// `[esi+0x170]` и пишет в `cl.punchangle`) и `CL_PredictMovement`
+/// (`0x10052D50`: `frame = 0x12F239C0 + (seq & 0x3F) * 0x1930`).
+pub mod frames {
+    /// `int cl.cmdnumber` — сколько команд уже создано.
+    pub const CMD_NUMBER: usize = 0x274B20;
+
+    /// `int cl.parsecount` — последняя команда, подтверждённая сервером.
+    pub const PARSE_COUNT: usize = 0x274B14;
+
+    /// Массив `frame_t frames[64]`.
+    pub const BASE: usize = 0x2F23_9C0;
+
+    /// Размер одного `frame_t`.
+    pub const STRIDE: usize = 0x1930;
+
+    /// `vec3_t punchangle` внутри `frame_t`.
+    pub const PUNCHANGLE: usize = 0x170;
+}
+
+/// `usercmd_t` — команда игрока на один тик, её заполняет клиент в
+/// `CL_CreateMove` и отправляет на сервер.
+pub mod usercmd {
+    /// `vec3_t viewangles` — углы, с которыми сервер посчитает выстрел.
+    pub const VIEWANGLES: usize = 0x04;
+
+    /// `unsigned short buttons` — удерживаемые кнопки.
+    ///
+    /// Проверено по декомпиляции `client.dll!CL_CreateMove` (`0x1009DA30`):
+    /// клиент пишет `*(ushort *)(cmd + 0x1E) = buttons`, затем выставляет в нём
+    /// биты `0x08`/`0x10` по знаку `forwardmove`.
+    pub const BUTTONS: usize = 0x1E;
+
+    /// Кнопка «огонь» в [`BUTTONS`].
+    pub const IN_ATTACK: u16 = 0x01;
+
+    /// `byte impulse` — импульсная команда.
+    pub const IMPULSE: usize = 0x20;
+
+    /// `byte weaponselect` — выбор оружия.
+    pub const WEAPONSELECT: usize = 0x21;
+
+    /// Шаг записи в `cl.cmds`, а не размер `usercmd_t`: полная запись — `0x4C`
+    /// (`0x100467B9`: `imul esi, eax, 0x4C`). Первые `0x34` байта обнуляются
+    /// перед заполнением (`push 0x34` в `0x100467C0`), дальше движок пишет
+    /// `frametime` и поля предсказания.
+    pub const SIZE: usize = 0x4C;
+}
+
 /// `client.dll`: интерфейс рендера, данные игроков, vtable рендерера.
 pub mod client {
     // --- студийный интерфейс ---
@@ -322,6 +448,22 @@ pub mod client {
 
     /// Копия `engine_studio_api_t` (0xC0 байт) внутри клиента.
     pub const ENGINE_STUDIO_API_COPY: usize = 0x1B25_48;
+
+    // --- cl_enginefuncs: канонический путь угла ---
+
+    /// Слот `pfnGetViewAngles` в таблице `cl_enginefuncs_t` клиента.
+    ///
+    /// Реверс `client.dll+0x9DD70` (процессор мыши в кадре): углы читаются в
+    /// буфер через этот слот, обрабатываются и пишутся обратно слотом
+    /// [`SET_VIEW_ANGLES`] — командой клиент пользуется из кэша, который
+    /// обновляет сеттер. Прямая запись в `cl.viewangles` этот путь в обход
+    /// себя оставляет: камера едет, кэш команды — нет.
+    pub const GET_VIEW_ANGLES: usize = 0x1B02_48;
+
+    /// Слот `pfnSetViewAngles(vec3_t *angles)` — единственный канонический
+    /// способ сменить угол: обновляет и `cl.viewangles` (камера), и кэш,
+    /// из которого собирается отправляемая команда.
+    pub const SET_VIEW_ANGLES: usize = 0x1B02_4C;
 
     /// Объект `CStudioModelRenderer` (статический).
     pub const STUDIO_RENDERER: usize = 0x1F51_C8;
@@ -383,7 +525,9 @@ pub mod client {
     /// ✔ Есть дефуз-кит — байт (`#Cstrike_DEFUSE_KIT`).
     pub const PLAYER_EXTRA_DEFUSER: usize = 0x33;
 
-    /// ✔ Здоровье (`"health"`).
+    /// ✔ Здоровье (`"health"`). Заполняется только для себя и союзников:
+    /// сервер не рассылает здоровье врагов, для них здесь мусор — живость
+    /// врага смотрят по [`PLAYER_EXTRA_DEAD`].
     pub const PLAYER_EXTRA_HEALTH: usize = 0xB8;
 
     /// ✔ Деньги (`"account"`).
