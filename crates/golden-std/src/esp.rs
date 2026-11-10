@@ -275,6 +275,44 @@ pub fn drawn() -> u64 {
     DRAWN.load(Ordering::Relaxed)
 }
 
+/// Меняет отрисовку контура, не останавливая сбор целей триггербота.
+pub fn set_outline(enabled: bool) {
+    if let Ok(mut settings) = SETTINGS.lock() {
+        if let Some(settings) = settings.as_mut() {
+            settings.outline = enabled;
+        }
+    }
+}
+
+/// Меняет ширину контура во время работы.
+pub fn set_width(width: f32) {
+    if let Ok(mut settings) = SETTINGS.lock() {
+        if let Some(settings) = settings.as_mut() {
+            settings.width = width.clamp(1.0, 8.0);
+        }
+    }
+}
+
+/// Задаёт постоянный цвет контура сквозь стены.
+pub fn set_color(color: Color) {
+    if let Ok(mut settings) = SETTINGS.lock() {
+        if let Some(settings) = settings.as_mut() {
+            settings.color = Some(Arc::new(move |_| color));
+        }
+    }
+}
+
+/// Задаёт цвет видимой части или отключает второй проход.
+pub fn set_visible_color(color: Option<Color>) {
+    if let Ok(mut settings) = SETTINGS.lock() {
+        if let Some(settings) = settings.as_mut() {
+            settings.visible = color.map(|color| {
+                Arc::new(move |_: &Player| color) as Arc<dyn Fn(&Player) -> Color + Send + Sync>
+            });
+        }
+    }
+}
+
 /// Сколько подписей поставлено всего.
 pub fn labels() -> u32 {
     LABELS.load(Ordering::Relaxed)

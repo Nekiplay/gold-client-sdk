@@ -126,6 +126,32 @@ static POINTER: Mutex<Option<Pos2>> = Mutex::new(None);
 /// Курсор, который просит egui.
 static CURSOR: Mutex<egui::CursorIcon> = Mutex::new(egui::CursorIcon::Default);
 
+/// Число добавленных нами вызовов ShowCursor в оконном потоке.
+static CURSOR_SHOWS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn request_cursor_update() {
+    if let Some(hwnd) = golden_std::input::game_window() {
+        sys::request_cursor_update(hwnd as sys::Hwnd);
+    }
+}
+
+/// Вызывается только оконной процедурой: счётчик ShowCursor принадлежит потоку.
+fn sync_cursor_visibility() {
+    if crate::visible() {
+        if !sys::cursor_visible() {
+            loop {
+                let count = sys::show_cursor(true);
+                CURSOR_SHOWS.fetch_add(1, Ordering::Relaxed);
+                if count >= 0 { break; }
+            }
+        }
+    } else {
+        for _ in 0..CURSOR_SHOWS.swap(0, Ordering::Relaxed) {
+            sys::show_cursor(false);
+        }
+    }
+}
+
 /// Выключаем клиентский режим мыши, если он действительно был активен.
 static MOUSE_WAS_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -271,6 +297,11 @@ unsafe extern "system" fn wndproc(
 ) -> isize {
     let _inside = golden_sdk::module::InFlight::enter();
     let original = ORIGINAL.load(Ordering::Acquire);
+
+    if msg == sys::WM_EGUI_CURSOR {
+        sync_cursor_visibility();
+        return 0;
+    }
 
     // Клавиша-переключатель работает и при скрытом меню.
     if msg == sys::WM_KEYDOWN && !is_repeat(lparam) {

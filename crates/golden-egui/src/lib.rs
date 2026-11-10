@@ -46,6 +46,7 @@ pub mod keys {
 
 /// UI-колбэк мода: вызывается из рендер-потока каждый кадр, пока меню видимо.
 static UI: Mutex<Option<Box<dyn FnMut(&egui::Context) + Send>>> = Mutex::new(None);
+static FRAME: Mutex<Option<Box<dyn FnMut() + Send>>> = Mutex::new(None);
 
 /// Меню открыто.
 static VISIBLE: AtomicBool = AtomicBool::new(false);
@@ -105,6 +106,11 @@ pub fn set_ui(callback: impl FnMut(&egui::Context) + Send + 'static) {
     *UI.lock().unwrap() = Some(Box::new(callback));
 }
 
+/// Кадровый колбэк вызывается из рендер-потока даже при закрытом меню.
+pub fn set_frame_callback(callback: impl FnMut() + Send + 'static) {
+    *FRAME.lock().unwrap() = Some(Box::new(callback));
+}
+
 /// Открывает или прячет меню.
 ///
 /// При открытии перехватываются оконные сообщения ввода. Поле состояния чата
@@ -120,10 +126,10 @@ pub fn set_visible(visible: bool) {
     if visible {
         input::release_game_mouse();
         input::capture_game_input();
-        sys::show_cursor(true);
+        input::request_cursor_update();
         input::feed_cursor_now();
     } else {
-        sys::show_cursor(false);
+        input::request_cursor_update();
         input::feed_pointer_gone();
         input::release_game_input();
         input::restore_game_mouse();
@@ -134,6 +140,11 @@ pub fn set_visible(visible: bool) {
 /// Открыто ли меню.
 pub fn visible() -> bool {
     VISIBLE.load(Ordering::Acquire)
+}
+
+/// Готов ли рендерер меню к работе.
+pub fn ready() -> bool {
+    paint::ready()
 }
 
 /// Переключает видимость меню.

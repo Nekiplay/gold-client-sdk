@@ -1,0 +1,13 @@
+[package]
+name = "example-combined"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+golden-sdk = { path = "../../crates/golden-sdk" }
+golden-std = { path = "../../crates/golden-std" }
+golden-egui = { path = "../../crates/golden-egui" }

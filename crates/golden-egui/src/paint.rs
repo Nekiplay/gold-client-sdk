@@ -43,49 +43,40 @@ static START: OnceLock<Instant> = OnceLock::new();
 /// Момент предыдущего кадра.
 static LAST_FRAME: Mutex<Option<Instant>> = Mutex::new(None);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
-static ORIGINAL_PLAYER: AtomicUsize = AtomicUsize::new(0);
-static SWAP_INSTALLED: AtomicBool = AtomicBool::new(false);
+static ORIGINAL_SDL_SWAP: AtomicUsize = AtomicUsize::new(0);
+static SWAP_SLOT: AtomicUsize = AtomicUsize::new(0);
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn VirtualProtect(address: *mut c_void, size: usize, protection: u32, old: *mut u32) -> i32;
+}
+
+/// Меняет слот импорта, сохраняя исходную защиту страницы.
+unsafe fn swap_import(slot: usize, expected: usize, replacement: usize) -> bool {
+    let mut old = 0;
+    if unsafe { VirtualProtect(slot as *mut c_void, size_of::<usize>(), 0x04, &mut old) } == 0 {
+        return false;
+    }
+    let cell = unsafe { &*(slot as *const AtomicUsize) };
+    let changed = cell.compare_exchange(expected, replacement, Ordering::AcqRel, Ordering::Acquire).is_ok();
+    let mut ignored = 0;
+    if unsafe { VirtualProtect(slot as *mut c_void, size_of::<usize>(), old, &mut ignored) } == 0 {
+        golden_sdk::log!("egui: не удалось восстановить защиту страницы импорта");
+    }
+    changed
+}
 
 pub(crate) fn ready() -> bool {
     GL_READY.load(Ordering::Acquire) && !UNINSTALL.load(Ordering::Acquire)
 }
 
-unsafe extern "C" fn draw_player(flags: i32, player: *mut c_void) -> i32 {
+unsafe extern "C" fn sdl_swap_window(window: *mut c_void) {
     let _inside = golden_sdk::module::InFlight::enter();
-    if !SWAP_INSTALLED.load(Ordering::Acquire) && !golden_sdk::module::should_stop() {
-        let _lock = INSTALL_LOCK.lock().unwrap();
-        if !UNINSTALL.load(Ordering::Acquire) && !SWAP_INSTALLED.load(Ordering::Acquire) {
-            if let Some(target) = sys::opengl_export("wglSwapBuffers") {
-                match unsafe { golden_std::hooks::install(target, hook_swap_buffers as *const ()) }
-                {
-                    Ok(_) => {
-                        SWAP_INSTALLED.store(true, Ordering::Release);
-                        golden_sdk::log!("egui: wglSwapBuffers перехвачен");
-                    }
-                    Err(error) => {
-                        SWAP_INSTALLED.store(true, Ordering::Release);
-                        golden_sdk::log!("egui: ошибка перехвата: {error}");
-                    }
-                }
-            }
-        }
-    }
-    let original = ORIGINAL_PLAYER.load(Ordering::Acquire);
-    if original == 0 {
-        return 0;
-    }
-    let original: unsafe extern "C" fn(i32, *mut c_void) -> i32 =
-        unsafe { std::mem::transmute(original) };
-    unsafe { original(flags, player) }
-}
-
-golden_std::hook! {
-    /// Конец кадра: поверх сцены игры рисуем egui, затем смена буферов.
-    unsafe extern "system" fn hook_swap_buffers(hdc: *mut c_void) original: swap_buffers_original -> i32 {
-        let _inside = golden_sdk::module::InFlight::enter();
-        frame();
-        // SAFETY: трамплин выставлен `hooks::install`; сигнатура совпадает.
-        unsafe { swap_buffers_original()(hdc) }
+    frame();
+    let original = ORIGINAL_SDL_SWAP.load(Ordering::Acquire);
+    if original != 0 {
+        let original: unsafe extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(original) };
+        unsafe { original(window) };
     }
 }
 
@@ -124,37 +115,38 @@ fn installer_main() {
     }
 
     drop(_lock);
-    // Ждём интерфейс; детур будет установлен только в рендер-потоке.
+    // hw.dll вызывает SDL_GL_SwapWindow через импорт, в том числе в меню.
+    // Подменяем указатель, не меняя исполняемые байты из фонового потока.
     loop {
         if golden_sdk::module::should_stop() || UNINSTALL.load(Ordering::Acquire) {
             return;
         }
-        if golden_sdk::renderer::StudioRenderer::global().is_some_and(|r| r.is_initialized()) {
+        if let (Some(base), Some(original)) = (
+            golden_sdk::process::hw_base(),
+            golden_sdk::process::export("SDL2.dll", "SDL_GL_SwapWindow"),
+        ) {
             let _lock = INSTALL_LOCK.lock().unwrap();
             if golden_sdk::module::should_stop() || UNINSTALL.load(Ordering::Acquire) {
                 return;
             }
-            if let Some(base) = golden_sdk::process::client_base() {
-                let table = (base + golden_sdk::offsets::client::STUDIO_INTERFACE)
-                    as *mut golden_sdk::renderer::StudioInterface;
-                let slot = unsafe { std::ptr::addr_of_mut!((*table).draw_player) } as usize;
-                if !golden_sdk::process::is_writable(slot) {
-                    golden_sdk::log!("egui: слот StudioDrawPlayer недоступен для записи");
-                    return;
-                }
-                let original = unsafe { (*table).draw_player };
-                if let Some(original) = original {
-                    ORIGINAL_PLAYER.store(original as usize, Ordering::Release);
-                    if let Err(error) =
-                        unsafe { golden_std::hooks::interface_player(draw_player as *const ()) }
-                    {
-                        golden_sdk::log!("egui: слот StudioDrawPlayer не установлен: {error}");
-                    } else {
-                        golden_sdk::log!("egui: слот StudioDrawPlayer подменён; ждём рендер-поток");
-                    }
-                    return;
-                }
+            let slot = base + 0x1F93E4;
+            if !golden_sdk::process::is_readable(slot) {
+                golden_sdk::log!("egui: импорт SDL_GL_SwapWindow недоступен для чтения");
+                return;
             }
+            let previous = unsafe { golden_sdk::process::read::<usize>(slot) };
+            if previous != original {
+                golden_sdk::log!("egui: импорт SDL_GL_SwapWindow уже изменён; установка отменена");
+                return;
+            }
+            ORIGINAL_SDL_SWAP.store(previous, Ordering::Release);
+            if unsafe { swap_import(slot, previous, sdl_swap_window as usize) } {
+                SWAP_SLOT.store(slot, Ordering::Release);
+                golden_sdk::log!("egui: импорт SDL_GL_SwapWindow подменён");
+            } else {
+                golden_sdk::log!("egui: не удалось подменить импорт SDL_GL_SwapWindow");
+            }
+            return;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -168,17 +160,20 @@ fn installer_main() {
 pub(crate) fn begin_uninstall() {
     UNINSTALL.store(true, Ordering::Release);
     drop(INSTALL_LOCK.lock().unwrap());
-    if !GL_READY.load(Ordering::Acquire) {
-        return;
+    if GL_READY.load(Ordering::Acquire) {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while !DESTROYED.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if DESTROYED.load(Ordering::Acquire) {
+            golden_sdk::log!("egui: GL-объекты освобождены");
+        } else {
+            golden_sdk::log!("egui: кадр не пришёл — GL-объекты останутся в контексте до выхода игры");
+        }
     }
-    let deadline = Instant::now() + Duration::from_millis(500);
-    while !DESTROYED.load(Ordering::Acquire) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    if DESTROYED.load(Ordering::Acquire) {
-        golden_sdk::log!("egui: GL-объекты освобождены");
-    } else {
-        golden_sdk::log!("egui: кадр не пришёл — GL-объекты останутся в контексте до выхода игры");
+    let slot = SWAP_SLOT.swap(0, Ordering::AcqRel);
+    if slot != 0 && !unsafe { swap_import(slot, sdl_swap_window as usize, ORIGINAL_SDL_SWAP.load(Ordering::Acquire)) } {
+        golden_sdk::log!("egui: не удалось восстановить импорт SDL_GL_SwapWindow");
     }
 }
 
@@ -191,6 +186,11 @@ fn frame() {
         }
         DESTROYED.store(true, Ordering::Release);
         return;
+    }
+    if let Ok(mut callback) = crate::FRAME.lock() {
+        if let Some(callback) = callback.as_mut() {
+            callback();
+        }
     }
     if GL_READY.load(Ordering::Acquire) && !crate::visible() {
         return;
@@ -214,7 +214,7 @@ fn frame() {
     input::ensure_sdl_mouse_released();
     // Игра могла спрятать курсор на переходах — возвращаем.
     if !sys::cursor_visible() {
-        sys::show_cursor(true);
+        input::request_cursor_update();
     }
     // GoldSrc может не прислать WM_MOUSEMOVE после выхода из relative mode.
     // Читаем абсолютную позицию напрямую, чтобы курсор egui не зависел от

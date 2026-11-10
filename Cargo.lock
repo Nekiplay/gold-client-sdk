@@ -205,6 +205,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-combined"
+version = "0.1.0"
+dependencies = [
+ "golden-egui",
+ "golden-sdk",
+ "golden-std",
+]
+
+[[package]]
 name = "example-console"
 version = "0.1.0"
 dependencies = [

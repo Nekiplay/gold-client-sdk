@@ -13,6 +13,7 @@ pub type Hwnd = *mut c_void;
 pub type WndProc = unsafe extern "system" fn(Hwnd, u32, usize, isize) -> isize;
 
 pub const GWLP_WNDPROC: i32 = -4;
+pub const WM_EGUI_CURSOR: u32 = 0x8000 + 0x41;
 
 pub const WM_SETCURSOR: u32 = 0x0020;
 pub const WM_KEYDOWN: u32 = 0x0100;
@@ -102,6 +103,7 @@ const CURSOR_SHOWING: u32 = 0x0000_0001;
 
 #[link(name = "user32")]
 unsafe extern "system" {
+    fn PostMessageW(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> i32;
     #[cfg_attr(target_pointer_width = "32", link_name = "GetWindowLongW")]
     fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> usize;
     #[cfg_attr(target_pointer_width = "32", link_name = "SetWindowLongW")]
@@ -225,16 +227,14 @@ pub fn call_default(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
-/// Показать/спрятать системный курсор, выровняв счётчик видимости.
-pub fn show_cursor(show: bool) {
-    // SAFETY: `ShowCursor` потокобезопасен.
-    unsafe {
-        if show {
-            while ShowCursor(1) < 0 {}
-        } else {
-            while ShowCursor(0) >= 0 {}
-        }
-    }
+/// Изменяет счётчик курсора вызывающего потока на единицу.
+pub fn show_cursor(show: bool) -> i32 {
+    unsafe { ShowCursor(show as i32) }
+}
+
+/// Просит оконный поток согласовать видимость курсора.
+pub fn request_cursor_update(hwnd: Hwnd) {
+    unsafe { PostMessageW(hwnd, WM_EGUI_CURSOR, 0, 0); }
 }
 
 /// Виден ли системный курсор сейчас.

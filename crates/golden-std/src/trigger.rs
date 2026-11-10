@@ -294,6 +294,21 @@ pub fn set_activation_vk(vk: u32) {
     ACTIVATION_VK.store(vk & 0xFF, Ordering::Release);
 }
 
+/// Изменяет задержку реакции в миллисекундах.
+pub fn set_delay_ms(ms: u32) {
+    DELAY_MS.store(ms, Ordering::Release);
+}
+
+/// Ограничивает стрельбу попаданиями в голову.
+pub fn set_head_only(enabled: bool) {
+    HEAD_ONLY.store(enabled, Ordering::Release);
+}
+
+/// Меняет максимальную дистанцию в игровых единицах.
+pub fn set_range(range: u32) {
+    MAX_RANGE.store(range, Ordering::Release);
+}
+
 /// Разрешён ли огонь прямо сейчас.
 pub fn enabled() -> bool {
     INSTALLED.load(Ordering::Acquire) && ENABLED.load(Ordering::Acquire)
