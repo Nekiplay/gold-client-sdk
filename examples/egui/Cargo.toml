@@ -1,0 +1,16 @@
+[package]
+name = "example-egui"
+description = "Демо golden-egui: egui-меню поверх игры, Insert — открыть/закрыть"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+golden-sdk = { path = "../../crates/golden-sdk" }
+golden-std = { path = "../../crates/golden-std" }
+golden-egui = { path = "../../crates/golden-egui" }
+egui = { version = "0.37", default-features = false }

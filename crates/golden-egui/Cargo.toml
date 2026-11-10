@@ -1,0 +1,12 @@
+[package]
+name = "golden-egui"
+description = "egui поверх Gold Client: рендер в конце кадра и ввод из оконной процедуры"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+golden-sdk = { path = "../golden-sdk" }
+golden-std = { path = "../golden-std" }
+egui = { version = "0.37", features = ["default_fonts"] }
+egui_glow = "0.37"

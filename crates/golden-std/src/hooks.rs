@@ -213,6 +213,17 @@ pub unsafe fn interface(ours: *mut StudioInterface) -> Result<(), Error> {
     }
 }
 
+/// Подменяет только `StudioDrawPlayer` в клиентской таблице интерфейса.
+///
+/// # Safety
+/// `hook` должен иметь ABI `StudioDrawPlayer` и жить до снятия перехвата.
+pub unsafe fn interface_player(hook: *const ()) -> Result<Hook, Error> {
+    let base = golden_sdk::process::client_base().ok_or(Error::NoInterface)?;
+    let table = (base + golden_sdk::offsets::client::STUDIO_INTERFACE) as *mut StudioInterface;
+    let slot = unsafe { core::ptr::addr_of_mut!((*table).draw_player) } as usize;
+    unsafe { pointer(slot, hook) }
+}
+
 /// Подменяет указатель на функцию, который движок читает сам.
 ///
 /// Не патчит код: по `slot` должен лежать адрес живой функции (например

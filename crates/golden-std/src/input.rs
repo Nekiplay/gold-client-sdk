@@ -760,6 +760,20 @@ pub fn is_down(vk: u32) -> bool {
     (vk as usize) < KEYS && PHYSICAL[vk as usize].load(Ordering::Acquire)
 }
 
+/// Отпускает все клавиши, которые движок видел зажатыми через `Key_Event`.
+///
+/// В отличие от отправки `WM_KEYUP`, это обновляет именно внутреннее состояние
+/// GoldSrc (`+forward`, `+back`, кнопки мыши и т. п.). Используется оверлеями,
+/// которые временно забирают ввод у игры.
+pub fn release_physical_keys() {
+    for vk in 0..KEYS as u32 {
+        if is_down(vk) {
+            let _ = lift(vk);
+            PHYSICAL[vk as usize].store(false, Ordering::Release);
+        }
+    }
+}
+
 /// Открыт чат или консоль: там клавиши нужны для ввода текста.
 fn text_input_open() -> bool {
     let base = ENGINE_BASE.load(Ordering::Acquire);
